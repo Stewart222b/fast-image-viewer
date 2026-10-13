@@ -25,6 +25,10 @@ namespace FastImageViewer
         private readonly TextBlock metadata = Text("", 12, "#666666");
         private readonly TextBlock counter = Text("", 12, "#404040");
         private readonly TextBox zoomInput = new TextBox();
+        private readonly Button displayMode = new Button();
+        private readonly List<MenuItem> smoothModeItems = new List<MenuItem>();
+        private readonly List<MenuItem> pixelModeItems = new List<MenuItem>();
+        private bool? displayedPixelMode;
         private readonly Border welcome;
         private readonly Border message;
         private readonly TextBlock messageText = Text("", 13, "#303030");
@@ -133,11 +137,17 @@ namespace FastImageViewer
             bottom.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
             bottom.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
             bottom.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            bottom.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
             filename.VerticalAlignment = VerticalAlignment.Center; filename.Margin = new Thickness(10, 0, 10, 0); filename.TextTrimming = TextTrimming.CharacterEllipsis;
             bottom.Children.Add(filename);
             metadata.VerticalAlignment = VerticalAlignment.Center; metadata.Margin = new Thickness(8, 0, 10, 0); metadata.TextTrimming = TextTrimming.CharacterEllipsis;
             Grid.SetColumn(metadata, 1); bottom.Children.Add(metadata);
-            counter.VerticalAlignment = VerticalAlignment.Center; counter.Margin = new Thickness(10, 0, 12, 0); Grid.SetColumn(counter, 2); bottom.Children.Add(counter);
+            displayMode.Height = 22; displayMode.MinWidth = 74;
+            displayMode.VerticalAlignment = VerticalAlignment.Center;
+            displayMode.Margin = new Thickness(6, 0, 6, 0);
+            displayMode.Click += delegate { SetDisplayMode(!surface.PixelMode); };
+            Grid.SetColumn(displayMode, 2); bottom.Children.Add(displayMode);
+            counter.VerticalAlignment = VerticalAlignment.Center; counter.Margin = new Thickness(10, 0, 12, 0); Grid.SetColumn(counter, 3); bottom.Children.Add(counter);
             Grid.SetRow(bottom, 2); root.Children.Add(bottom);
 
             surface.ViewChanged += UpdateViewStatus;
@@ -240,7 +250,13 @@ namespace FastImageViewer
             AddMenu(menu, "适应窗口", "F", surface.Fit);
             AddMenu(menu, "实际像素", "0", surface.ActualSize);
             AddMenu(menu, "顺时针旋转", "R", delegate { Rotate(1); });
-            AddMenu(menu, "像素模式", "P", delegate { surface.PixelMode = !surface.PixelMode; surface.Changed(); });
+            var modes = new MenuItem { Header = "显示模式", InputGestureText = "P" };
+            var smooth = new MenuItem { Header = "平滑模式（适合照片）", IsCheckable = true, IsChecked = !surface.PixelMode };
+            var pixel = new MenuItem { Header = "像素模式（保留像素边界）", IsCheckable = true, IsChecked = surface.PixelMode };
+            smooth.Click += delegate { SetDisplayMode(false); };
+            pixel.Click += delegate { SetDisplayMode(true); };
+            smoothModeItems.Add(smooth); pixelModeItems.Add(pixel);
+            modes.Items.Add(smooth); modes.Items.Add(pixel); menu.Items.Add(modes);
             AddMenu(menu, "透明背景棋盘", "B", surface.ToggleCheckerboard);
             menu.Items.Add(new Separator());
             AddMenu(menu, "全屏", "F11", ToggleFullscreen);
@@ -400,10 +416,30 @@ namespace FastImageViewer
 
         private void UpdateViewStatus()
         {
+            UpdateDisplayModeStatus();
             UpdateZoomText(false);
             zoomInput.IsEnabled = fit.IsEnabled = actual.IsEnabled = surface.Bitmap != null;
             fit.Background = surface.Bitmap != null && surface.View.IsFit ? SystemColors.ControlLightBrush : Brushes.Transparent;
             actual.Background = surface.Bitmap != null && !surface.View.IsFit && Math.Abs(surface.View.Scale * surface.DpiScale - 1) < 0.001 ? SystemColors.ControlLightBrush : Brushes.Transparent;
+        }
+
+        private void SetDisplayMode(bool pixel)
+        {
+            surface.PixelMode = pixel;
+            UpdateDisplayModeStatus(true);
+        }
+
+        private void UpdateDisplayModeStatus(bool force = false)
+        {
+            if (!force && displayedPixelMode == surface.PixelMode) return;
+            displayedPixelMode = surface.PixelMode;
+            displayMode.Content = surface.PixelMode ? "像素模式" : "平滑模式";
+            displayMode.ToolTip = surface.PixelMode
+                ? "当前：像素模式。放大时保留像素边界。单击或按 P 切换为平滑模式。"
+                : "当前：平滑模式。缩放时平滑图像边缘，适合照片。单击或按 P 切换为像素模式。";
+            AutomationProperties.SetName(displayMode, "当前显示模式：" + displayMode.Content);
+            foreach (var item in smoothModeItems) item.IsChecked = !surface.PixelMode;
+            foreach (var item in pixelModeItems) item.IsChecked = surface.PixelMode;
         }
 
         private void UpdateZoomText(bool force)
@@ -471,7 +507,8 @@ namespace FastImageViewer
                 HelpRow("R / Shift+R", "顺时针 / 逆时针旋转");
                 HelpRow("F11 / Esc", "进入 / 退出全屏");
                 HelpRow("T", "隐藏 / 显示工具栏");
-                HelpRow("P / B", "像素缩放 / 透明棋盘");
+                HelpRow("P", "平滑 / 像素模式，底栏显示当前模式");
+                HelpRow("B", "透明棋盘");
                 HelpRow("Ctrl+O", "打开图片");
                 HelpRow("Ctrl+Shift+O", "打开文件夹");
                 HelpRow("I / F1", "图片信息 / 操作指南");
@@ -571,7 +608,7 @@ namespace FastImageViewer
             else if (key == Key.D0 || key == Key.NumPad0) surface.ActualSize();
             else if (key == Key.R) Rotate(shift ? -1 : 1);
             else if (key == Key.I) TogglePanel("info");
-            else if (key == Key.P) { surface.PixelMode = !surface.PixelMode; surface.Changed(); }
+            else if (key == Key.P) SetDisplayMode(!surface.PixelMode);
             else if (key == Key.B) surface.ToggleCheckerboard();
             else if (key == Key.T) ToggleChrome();
             else return;

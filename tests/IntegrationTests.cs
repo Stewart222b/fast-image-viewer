@@ -187,11 +187,36 @@ namespace FastImageViewer
                 foreach (Size size in new[] { new Size(700, 440), new Size(1100, 720) })
                 {
                     Layout(size.Width, size.Height); CheckToolbar();
+                    var bottom = (FrameworkElement)Field<Grid>("root").Children[2];
+                    Rect modeBounds = Bounds(Field<Button>("displayMode"), bottom);
+                    Check(modeBounds.Left >= 0 && modeBounds.Right <= bottom.ActualWidth + 1 && modeBounds.Bottom <= bottom.ActualHeight + 1, "display mode indicator exceeds status bar");
                     Invoke("TogglePanel", "help"); Layout(size.Width, size.Height); CheckToolbar(); CheckDockedPanel();
                     Invoke("TogglePanel", "help");
                     Invoke("TogglePanel", "info"); Layout(size.Width, size.Height); CheckDockedPanel();
                     Invoke("TogglePanel", "info"); Layout(size.Width, size.Height);
                 }
+            });
+            Run("display mode is visible and synchronized across commands", delegate
+            {
+                Action<bool> verify = delegate(bool pixel)
+                {
+                    Check(surface.PixelMode == pixel, "render mode differs from selected mode");
+                    Check(Convert.ToString(Field<Button>("displayMode").Content) == (pixel ? "像素模式" : "平滑模式"), "status bar shows incorrect mode");
+                    foreach (MenuItem item in Field<System.Collections.Generic.List<MenuItem>>("smoothModeItems")) Check(item.IsChecked == !pixel, "smooth mode menu check is stale");
+                    foreach (MenuItem item in Field<System.Collections.Generic.List<MenuItem>>("pixelModeItems")) Check(item.IsChecked == pixel, "pixel mode menu check is stale");
+                };
+                verify(false);
+                var key = new KeyEventArgs(Keyboard.PrimaryDevice, new TestPresentationSource(), Environment.TickCount, Key.P) { RoutedEvent = Keyboard.PreviewKeyDownEvent, Source = surface };
+                Invoke("OnKey", surface, key);
+                Check(key.Handled, "P shortcut was not handled"); verify(true);
+                window.OpenPaths(new[] { first }); WaitLoaded(first); verify(true);
+                var selected = Field<System.Collections.Generic.List<MenuItem>>("pixelModeItems")[0];
+                selected.IsChecked = false;
+                selected.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent)); verify(true);
+                Field<System.Collections.Generic.List<MenuItem>>("smoothModeItems")[1].RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent)); verify(false);
+                var indicator = Field<Button>("displayMode");
+                indicator.RaiseEvent(new RoutedEventArgs(Button.ClickEvent)); verify(true);
+                indicator.RaiseEvent(new RoutedEventArgs(Button.ClickEvent)); verify(false);
             });
             Run("loaded and empty offscreen previews", delegate
             {

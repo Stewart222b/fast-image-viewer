@@ -15,7 +15,17 @@ namespace FastImageViewer
         public event Action ViewChanged;
         public event Action<int> Navigate;
         public event Action ToggleActualSize;
-        public bool PixelMode { get; set; }
+        private bool pixelMode;
+        public bool PixelMode
+        {
+            get { return pixelMode; }
+            set
+            {
+                if (pixelMode == value) return;
+                pixelMode = value;
+                Changed();
+            }
+        }
         public bool IsDragging { get; private set; }
         private Point lastPoint;
         private bool checkerboard;
