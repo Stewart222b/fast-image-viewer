@@ -1,0 +1,22 @@
+$ErrorActionPreference = 'Stop'
+try {
+    $root = Split-Path -Parent $PSScriptRoot
+    $compiler = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
+    $wpf = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\WPF'
+    if (-not (Test-Path -LiteralPath $compiler)) { throw 'The .NET Framework x64 C# compiler was not found.' }
+    $output = Join-Path $root 'artifacts'
+    New-Item -ItemType Directory -Path $output -Force | Out-Null
+    $exe = Join-Path $output 'CoreTests.exe'
+    $arguments = @('/nologo', '/target:exe', '/platform:x64', '/optimize+', '/langversion:5', ('/out:' + $exe), '/reference:System.dll', '/reference:System.Core.dll', '/reference:System.Xaml.dll', '/reference:System.Drawing.dll')
+    foreach ($assembly in @('WindowsBase.dll', 'PresentationCore.dll', 'PresentationFramework.dll')) {
+        $arguments += '/reference:' + (Join-Path $wpf $assembly)
+    }
+    & $compiler @arguments (Join-Path $PSScriptRoot 'CoreTests.cs') (Join-Path $root 'src\ViewerCore.cs')
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    Copy-Item -LiteralPath (Join-Path $root 'src\App.config') -Destination ($exe + '.config') -Force
+    & $exe $output
+    exit $LASTEXITCODE
+} catch {
+    Write-Error $_
+    exit 1
+}
