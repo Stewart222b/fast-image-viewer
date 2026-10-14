@@ -18,9 +18,22 @@ namespace FastImageViewer.Core
 
         public void SetImage(double width, double height)
         {
+            SetImage(width, height, false);
+        }
+
+        public void SetImage(double width, double height, bool preserveView)
+        {
+            bool keep = preserveView && !IsFit && ImageWidth > 0 && ImageHeight > 0;
+            ImagePoint center = ImagePointAt(ViewportWidth / 2, ViewportHeight / 2);
+            double relativeX = ImageWidth > 0 ? center.X / ImageWidth : .5;
+            double relativeY = ImageHeight > 0 ? center.Y / ImageHeight : .5;
             ImageWidth = ValidSize(width);
             ImageHeight = ValidSize(height);
-            Fit();
+            if (!keep || ImageWidth <= 0 || ImageHeight <= 0) { Fit(); return; }
+            Scale = Math.Max(Math.Min(0.01, FitScale()), Math.Min(32, Scale));
+            OffsetX = ViewportWidth / 2 - relativeX * ImageWidth * Scale;
+            OffsetY = ViewportHeight / 2 - relativeY * ImageHeight * Scale;
+            IsFit = false;
         }
 
         public void Resize(double width, double height)

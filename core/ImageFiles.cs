@@ -10,10 +10,10 @@ namespace FastImageViewer
         public static readonly StringComparer PathComparer = Path.DirectorySeparatorChar == '\\'
             ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
 
-        public const string DialogFilter = "图片文件|*.jpg;*.jpeg;*.png;*.bmp;*.gif;*.tif;*.tiff;*.ico;*.wdp;*.jxr|所有文件|*.*";
+        public const string DialogFilter = "图片文件|*.jpg;*.jpeg;*.png;*.webp;*.bmp;*.gif;*.tif;*.tiff;*.ico;*.wdp;*.jxr|所有文件|*.*";
         private static readonly HashSet<string> Extensions = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
-            ".jpg", ".jpeg", ".png", ".bmp", ".gif", ".tif", ".tiff", ".ico", ".wdp", ".jxr"
+            ".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif", ".tif", ".tiff", ".ico", ".wdp", ".jxr"
         };
 
         public static bool IsSupported(string path)

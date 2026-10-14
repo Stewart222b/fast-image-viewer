@@ -2,6 +2,9 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
+using System.Diagnostics;
+using System.Runtime.InteropServices;
+using SkiaSharp;
 using System.Threading;
 using System.Threading.Tasks;
 using Avalonia;
@@ -28,7 +31,11 @@ namespace FastImageViewer.Desktop
         private readonly List<MenuItem> pixelModeItems = new List<MenuItem>();
         private readonly TextBlock messageText = Text("", 13, "#303030");
         private readonly StackPanel panelBody = new StackPanel();
-        private readonly SemaphoreSlim decodeGate = new SemaphoreSlim(1, 1);
+        private readonly ImageLoadCache<Picture> imageCache;
+        private ImageLoadCache<Picture>.Lease imageLease;
+        private CancellationTokenSource loadCancellation;
+        private int clipboardOperationId;
+        private readonly SemaphoreSlim clipboardWriteGate = new SemaphoreSlim(1, 1);
         private readonly string[] startupArgs;
         private readonly SolidColorBrush activeBrush = Brush("#E1E1E1");
         private Border welcome;
@@ -43,6 +50,14 @@ namespace FastImageViewer.Desktop
         private ContextMenu commandMenu;
         private List<string> files = new List<string>();
         private Picture loaded;
+        private SKBitmap clipboardImage;
+        private int clipboardWidth, clipboardHeight;
+        private bool clipboardIsPreview;
+        private readonly IViewerClipboard clipboard;
+        private bool preserveZoom;
+        private readonly List<MenuItem> preserveItems = new List<MenuItem>();
+        private readonly List<MenuItem> copyImageItems = new List<MenuItem>();
+        private readonly List<MenuItem> revealItems = new List<MenuItem>();
         private int index = -1;
         private int requestId;
         private int userTurns;
@@ -58,10 +73,13 @@ namespace FastImageViewer.Desktop
         private double savedWidth;
         private double savedHeight;
 
-        public ViewerWindow(string[] args)
+        public ViewerWindow(string[] args, IViewerClipboard clipboard = null)
         {
             startupArgs = args ?? new string[0];
-            Title = "拾图";
+            this.clipboard = clipboard ?? new SystemViewerClipboard(this);
+            imageCache = new ImageLoadCache<Picture>(PictureLoader.Load,
+                image => (long)image.Pixels.RowBytes * image.Pixels.Height, image => image.Dispose());
+            Title = "Fast Image Viewer";
             Width = 1100;
             Height = 760;
             MinWidth = 700;
@@ -138,7 +156,8 @@ namespace FastImageViewer.Desktop
             {
                 closed = true;
                 requestId++;
-                if (loaded != null) loaded.Dispose();
+                CancelLoad(); ReleaseImageLease(); imageCache.Dispose(); loaded = null;
+                clipboardImage?.Dispose();
                 canvas.ClearImage();
             };
             UpdateNavigation();
@@ -258,9 +277,22 @@ namespace FastImageViewer.Desktop
             var menu = new ContextMenu();
             AddMenu(menu, "打开图片", OpenFile);
             AddMenu(menu, "打开文件夹", OpenFolder);
+            AddMenu(menu, "粘贴图片    Ctrl+V", delegate { _ = PasteImage(); });
+            var copyImage = new MenuItem { Header = "复制图片    Ctrl+C", IsEnabled = canvas.HasImage };
+            copyImage.Click += delegate { _ = CopyImage(); };
+            copyImageItems.Add(copyImage);
+            menu.Items.Add(copyImage);
+            var reveal = new MenuItem { Header = "在文件管理器中定位", IsEnabled = loaded != null };
+            reveal.Click += delegate { RevealFile(); };
+            revealItems.Add(reveal);
+            menu.Items.Add(reveal);
             menu.Items.Add(new Separator());
             AddMenu(menu, "适应窗口    F", canvas.Fit);
             AddMenu(menu, "实际像素    0", canvas.ActualSize);
+            var preserve = new MenuItem { Header = "保持缩放与位置    K", ToggleType = MenuItemToggleType.CheckBox, IsChecked = preserveZoom };
+            preserve.Click += delegate { SetPreserveZoom(!preserveZoom); };
+            preserveItems.Add(preserve);
+            menu.Items.Add(preserve);
             AddMenu(menu, "顺时针旋转    R", delegate { Rotate(1); });
             var modes = new MenuItem { Header = "显示模式    P" };
             var smooth = new MenuItem { Header = "平滑模式（适合照片）", ToggleType = MenuItemToggleType.CheckBox, IsChecked = !canvas.PixelMode };
@@ -355,7 +387,7 @@ namespace FastImageViewer.Desktop
                     {
                         new FilePickerFileType("图片文件")
                         {
-                            Patterns = new[] { "*.jpg", "*.jpeg", "*.png", "*.bmp", "*.gif", "*.tif", "*.tiff", "*.ico", "*.wdp", "*.jxr" }
+                            Patterns = new[] { "*.jpg", "*.jpeg", "*.png", "*.bmp", "*.gif", "*.tif", "*.tiff", "*.ico", "*.wdp", "*.jxr", "*.webp" }
                         },
                         new FilePickerFileType("所有文件") { Patterns = new[] { "*.*" } }
                     }
@@ -411,6 +443,7 @@ namespace FastImageViewer.Desktop
 
         public async void OpenPaths(string[] paths)
         {
+            CancelLoad(); imageCache.Preload(new string[0]);
             int version = ++requestId;
             files = new List<string>();
             index = -1;
@@ -431,7 +464,7 @@ namespace FastImageViewer.Desktop
                 if (files.Count == 0)
                 {
                     ResetDisplay();
-                    ShowMessage("没有找到可查看的图片。\n请打开 JPG、PNG、BMP、GIF、TIFF 或 ICO 文件。");
+                    ShowMessage("没有找到可查看的图片。\n请打开 JPG、PNG、WebP、BMP、GIF、TIFF 或 ICO 文件。");
                     return;
                 }
                 string selected = paths.Length == 1 && File.Exists(paths[0]) ? Path.GetFullPath(paths[0]) : null;
@@ -458,72 +491,77 @@ namespace FastImageViewer.Desktop
         private async void ShowIndex(int target)
         {
             if (target < 0 || target >= files.Count) return;
+            bool keepView = preserveZoom && canvas.HasImage;
             index = target;
+            if (clipboardImage != null) { clipboardImage.Dispose(); clipboardImage = null; }
             int version = ++requestId;
             string path = files[index];
-            if (loaded != null) { loaded.Dispose(); loaded = null; }
+            CancelLoad(); loadCancellation = new CancellationTokenSource();
+            CancellationToken cancellation = loadCancellation.Token;
+            imageCache.Preload(new string[0]);
+            loaded = null; UpdateViewStatus();
             if (panelKind == "info") BuildPanel();
             canvas.CancelWheelZoom();
             userTurns = 0;
             filename.Text = Path.GetFileName(path);
             ToolTip.SetTip(filename, path);
-            Title = Path.GetFileName(path) + " - 拾图";
+            Title = Path.GetFileName(path) + " - Fast Image Viewer";
             metadata.Text = "正在打开…";
             UpdateNavigation();
             message.IsVisible = false;
             ShowLoadingDelayed(version);
-            Picture result = null;
+            ImageLoadCache<Picture>.Lease nextLease = null;
             try
             {
-                await decodeGate.WaitAsync();
-                try
-                {
-                    if (closed || version != requestId) return;
-                    result = await Task.Run(delegate { return PictureLoader.Load(path); });
-                }
-                finally { decodeGate.Release(); }
-                if (closed || version != requestId)
-                {
-                    if (result != null) result.Dispose();
-                    return;
-                }
-                loaded = result;
-                result = null;
-                ApplyOrientation();
+                nextLease = await imageCache.LoadAsync(path, cancellation);
+                if (closed || version != requestId) return;
+                loaded = nextLease.Value;
+                ApplyOrientation(keepView);
+                ReleaseImageLease(); imageLease = nextLease; nextLease = null;
                 message.IsVisible = false;
                 metadata.Text = loaded.PixelWidth + " × " + loaded.PixelHeight + "   " + FormatSize(loaded.FileSize) + (loaded.IsPreview ? "   已缩小预览" : "");
-                if (Path.GetExtension(path).Equals(".gif", StringComparison.OrdinalIgnoreCase)) metadata.Text += "   首帧";
+                if (Path.GetExtension(path).Equals(".gif", StringComparison.OrdinalIgnoreCase) || Path.GetExtension(path).Equals(".webp", StringComparison.OrdinalIgnoreCase)) metadata.Text += "   首帧";
+                UpdateViewStatus();
                 if (panelKind == "info") BuildPanel();
+                var neighbors = new List<string>();
+                if (index + 1 < files.Count) neighbors.Add(files[index + 1]);
+                if (index > 0) neighbors.Add(files[index - 1]);
+                imageCache.Preload(neighbors);
             }
             catch (Exception ex)
             {
-                if (result != null) result.Dispose();
-                if (loaded != null) { loaded.Dispose(); loaded = null; }
                 if (!closed && version == requestId)
                 {
+                    loaded = null;
                     canvas.ClearImage();
+                    ReleaseImageLease(); UpdateViewStatus();
                     metadata.Text = "打开失败";
                     ShowMessage("无法显示「" + Path.GetFileName(path) + "」\n" + ex.Message + "\n可用方向键继续浏览，或重新打开图片。");
                 }
             }
+            finally { if (nextLease != null) nextLease.Dispose(); }
         }
 
-        private void ApplyOrientation()
+        private void ApplyOrientation(bool preserveView = false)
         {
-            if (loaded == null) return;
-            var oriented = ImageOrientation.Apply(loaded.Pixels, loaded.ExifQuarterTurns, loaded.ExifFlipHorizontal, userTurns);
+            if (loaded == null && clipboardImage == null) return;
+            var pixels = loaded == null ? clipboardImage : loaded.Pixels;
+            int turns = loaded == null ? 0 : loaded.ExifQuarterTurns;
+            var oriented = ImageOrientation.Apply(pixels, turns, loaded != null && loaded.ExifFlipHorizontal, userTurns);
             try
             {
                 var bitmap = AvaloniaImages.From(oriented);
-                bool swapped = ((loaded.ExifQuarterTurns + userTurns) % 2) != 0;
-                canvas.SetImage(bitmap, swapped ? loaded.PixelHeight : loaded.PixelWidth, swapped ? loaded.PixelWidth : loaded.PixelHeight);
+                bool swapped = ((turns + userTurns) % 2) != 0;
+                int width = loaded == null ? clipboardWidth : loaded.PixelWidth;
+                int height = loaded == null ? clipboardHeight : loaded.PixelHeight;
+                canvas.SetImage(bitmap, swapped ? height : width, swapped ? width : height, preserveView);
             }
             finally { oriented.Dispose(); }
         }
 
         private void Rotate(int turns)
         {
-            if (loaded == null) return;
+            if (loaded == null && clipboardImage == null) return;
             userTurns = (userTurns + turns + 4) % 4;
             ApplyOrientation();
         }
@@ -537,12 +575,15 @@ namespace FastImageViewer.Desktop
 
         private void ResetDisplay()
         {
-            if (loaded != null) { loaded.Dispose(); loaded = null; }
+            if (clipboardImage != null) { clipboardImage.Dispose(); clipboardImage = null; }
+            clipboardWidth = clipboardHeight = 0; clipboardIsPreview = false;
+            loaded = null;
             canvas.ClearImage();
+            ReleaseImageLease();
             filename.Text = "";
             ToolTip.SetTip(filename, null);
             metadata.Text = "";
-            Title = "拾图";
+            Title = "Fast Image Viewer";
             if (panelKind == "info") BuildPanel();
         }
 
@@ -551,6 +592,8 @@ namespace FastImageViewer.Desktop
             UpdateDisplayModeStatus(false);
             UpdateZoomText(false);
             bool hasImage = canvas.HasImage;
+            foreach (var item in copyImageItems) item.IsEnabled = loaded != null || clipboardImage != null;
+            foreach (var item in revealItems) item.IsEnabled = loaded != null && !String.IsNullOrEmpty(loaded.Path);
             zoomInput.IsEnabled = fit.IsEnabled = actual.IsEnabled = hasImage;
             fit.Background = hasImage && canvas.View.IsFit ? activeBrush : Brushes.Transparent;
             actual.Background = hasImage && !canvas.View.IsFit && Math.Abs(canvas.View.Scale * canvas.DpiScale - 1) < 0.001 ? activeBrush : Brushes.Transparent;
@@ -659,8 +702,19 @@ namespace FastImageViewer.Desktop
                 HelpRow("P", "平滑 / 像素模式，底栏显示当前模式");
                 HelpRow("B", "透明棋盘");
                 HelpRow("Ctrl+O", "打开图片");
+                HelpRow("Ctrl+C / Ctrl+V", "复制图片 / 粘贴图片或文件");
+                HelpRow("K", "保持缩放与位置切图");
                 HelpRow("Ctrl+Shift+O", "打开文件夹");
                 HelpRow("I / F1", "图片信息 / 操作指南");
+            }
+            else if (clipboardImage != null)
+            {
+                InfoRow("来源", "剪贴板");
+                InfoRow("尺寸", clipboardWidth + " × " + clipboardHeight + " 像素");
+                if (clipboardIsPreview) InfoRow("大图预览", "放大后细节以预览图为准。");
+                var copyPath = TextButton("复制文件路径", "剪贴板图片没有文件路径", delegate { }, 130);
+                copyPath.IsEnabled = false;
+                panelBody.Children.Add(copyPath);
             }
             else if (loaded == null) panelBody.Children.Add(Text("请先打开图片。", 12, "#666666"));
             else
@@ -678,6 +732,107 @@ namespace FastImageViewer.Desktop
                 copy.HorizontalAlignment = HorizontalAlignment.Left;
                 panelBody.Children.Add(copy);
             }
+        }
+
+        private void SetPreserveZoom(bool enabled)
+        {
+            preserveZoom = enabled;
+            foreach (var item in preserveItems) item.IsChecked = enabled;
+            ToolTip.SetTip(counter, enabled ? "切图保持缩放与位置；适应窗口模式仍自动适应。" : "切图自动适应窗口。");
+        }
+
+        public async Task CopyImage()
+        {
+            if (loaded == null && clipboardImage == null) return;
+            int operation = ++clipboardOperationId;
+            try
+            {
+                var pixels = loaded == null ? clipboardImage : loaded.Pixels;
+                bool preview = loaded == null ? clipboardIsPreview : loaded.IsPreview;
+                int exifTurns = loaded == null ? 0 : loaded.ExifQuarterTurns;
+                bool flip = loaded != null && loaded.ExifFlipHorizontal;
+                int rotation = userTurns;
+                SKBitmap snapshot = ImageOrientation.Apply(pixels, 0, false, 0);
+                byte[] png = await Task.Run(delegate
+                {
+                    using (snapshot) return DesktopWorkflow.EncodeDisplayed(snapshot, exifTurns, flip, rotation);
+                });
+                await clipboardWriteGate.WaitAsync();
+                try
+                {
+                    if (closed || operation != clipboardOperationId) return;
+                    await clipboard.WriteImageAsync(png);
+                    if (!closed && operation == clipboardOperationId)
+                        ToolTip.SetTip(counter, preview ? "已复制当前预览图。" : "已复制图片。");
+                }
+                finally { clipboardWriteGate.Release(); }
+            }
+            catch (Exception ex) { if (!closed && operation == clipboardOperationId) ShowMessage("无法复制图片：" + ex.Message); }
+        }
+
+        public async Task PasteImage()
+        {
+            int version = requestId;
+            int operation = ++clipboardOperationId;
+            try
+            {
+                ClipboardPicture data = await clipboard.ReadAsync();
+                if (closed || requestId != version || operation != clipboardOperationId) return;
+                if (data.Paths != null && data.Paths.Length > 0) { OpenPaths(data.Paths); return; }
+                if (data.Png == null) { ShowMessage("剪贴板中没有图片或图片文件。"); return; }
+                var decoded = DesktopWorkflow.DecodeClipboardPicture(data.Png, data.Width, data.Height);
+                SetClipboardPicture(decoded);
+            }
+            catch (Exception ex) { if (!closed && requestId == version && operation == clipboardOperationId) ShowMessage("无法粘贴图片：" + ex.Message); }
+        }
+
+        private void SetClipboardImage(SKBitmap pixels)
+        {
+            SetClipboardPicture(new DecodedClipboardPicture { Pixels = pixels, Width = pixels.Width, Height = pixels.Height });
+        }
+
+        private void SetClipboardPicture(DecodedClipboardPicture picture)
+        {
+            requestId++;
+            CancelLoad(); imageCache.Preload(new string[0]);
+            ResetDisplay();
+            clipboardImage = picture.Pixels;
+            clipboardWidth = picture.Width; clipboardHeight = picture.Height; clipboardIsPreview = picture.IsPreview;
+            userTurns = 0;
+            files = new List<string>();
+            index = -1;
+            UpdateNavigation();
+            filename.Text = "剪贴板图片";
+            metadata.Text = clipboardWidth + " × " + clipboardHeight + "   剪贴板" + (clipboardIsPreview ? "   已缩小预览" : "");
+            Title = "剪贴板图片 - Fast Image Viewer";
+            welcome.IsVisible = message.IsVisible = false;
+            try { ApplyOrientation(); }
+            catch { ResetDisplay(); throw; }
+            if (panelKind == "info") BuildPanel();
+        }
+
+        private void RevealFile()
+        {
+            if (loaded == null || String.IsNullOrEmpty(loaded.Path)) return;
+            try
+            {
+                string platform = RuntimeInformation.IsOSPlatform(OSPlatform.OSX) ? "macos" :
+                    RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "windows" : "linux";
+                Process.Start(DesktopWorkflow.Reveal(loaded.Path, platform));
+            }
+            catch (Exception ex) { ShowMessage("无法定位文件：" + ex.Message); }
+        }
+
+        private void CancelLoad()
+        {
+            if (loadCancellation == null) return;
+            loadCancellation.Cancel(); loadCancellation.Dispose(); loadCancellation = null;
+        }
+
+        private void ReleaseImageLease()
+        {
+            if (imageLease == null) return;
+            imageLease.Dispose(); imageLease = null;
         }
 
         private async void CopyPath(string path)
@@ -771,7 +926,9 @@ namespace FastImageViewer.Desktop
                 return;
             }
             if (focused is MenuItem) return;
-            if (ctrl && key == Key.O) { if (shift) OpenFolder(); else OpenFile(); }
+            if (ctrl && key == Key.C) { _ = CopyImage(); }
+            else if (ctrl && key == Key.V) { _ = PasteImage(); }
+            else if (ctrl && key == Key.O) { if (shift) OpenFolder(); else OpenFile(); }
             else if (key == Key.Escape)
             {
                 if (panel.IsVisible) { panel.IsVisible = false; panelKind = null; }
@@ -795,6 +952,7 @@ namespace FastImageViewer.Desktop
             else if (key == Key.R) Rotate(shift ? -1 : 1);
             else if (key == Key.I) TogglePanel("info");
             else if (key == Key.P) SetDisplayMode(!canvas.PixelMode);
+            else if (key == Key.K) SetPreserveZoom(!preserveZoom);
             else if (key == Key.B) canvas.ToggleCheckerboard();
             else if (key == Key.T) ToggleChrome();
             else return;

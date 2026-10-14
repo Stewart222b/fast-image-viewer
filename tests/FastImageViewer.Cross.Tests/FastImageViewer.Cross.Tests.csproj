@@ -8,6 +8,7 @@
     <StartupObject>FastImageViewer.CrossTests.CrossTests</StartupObject>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="..\ImageLoadCacheTests.cs" Link="ImageLoadCacheTests.cs" />
     <ProjectReference Include="..\..\core\FastImageViewer.Core.csproj" />
     <ProjectReference Include="..\..\imaging\FastImageViewer.Imaging.csproj" />
     <ProjectReference Include="..\..\cross\FastImageViewer.Desktop.csproj" />

@@ -6,6 +6,7 @@ using System.Reflection;
 using System.Threading;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
@@ -19,6 +20,15 @@ namespace FastImageViewer
         private static ImageSurface surface;
         private static string directory, first, second, corrupt, last, empty;
         private static int passed, failed;
+        private static readonly MemoryClipboard clipboard = new MemoryClipboard();
+        private static string revealedPath;
+
+        private sealed class MemoryClipboard : IViewerClipboard
+        {
+            public IDataObject Data;
+            public IDataObject Read() { return Data; }
+            public void Write(IDataObject data) { Data = data; }
+        }
 
         [STAThread]
         public static int Main(string[] args)
@@ -32,7 +42,7 @@ namespace FastImageViewer
             empty = Path.Combine(directory, "emptyfolder"); Directory.CreateDirectory(empty);
             SaveSample(first, false); SaveSample(second, true); SaveSample(last, false);
             File.WriteAllText(corrupt, "This is a deliberately corrupt generated test image.");
-            window = new MainWindow(new string[0]);
+            window = new MainWindow(new string[0], false, clipboard, path => revealedPath = path);
             surface = Field<ImageSurface>("surface");
             Layout();
             Run("latest async open wins", delegate
@@ -218,11 +228,185 @@ namespace FastImageViewer
                 indicator.RaiseEvent(new RoutedEventArgs(Button.ClickEvent)); verify(true);
                 indicator.RaiseEvent(new RoutedEventArgs(Button.ClickEvent)); verify(false);
             });
+            Run("themes update all surfaces without changing the image view", delegate
+            {
+                surface.Zoom(1.255); surface.Pan(37, -21); surface.PixelMode = true;
+                BitmapSource source = surface.Bitmap;
+                double scale = surface.View.Scale, x = surface.View.OffsetX, y = surface.View.OffsetY;
+                Action<bool> verify = delegate(bool dark)
+                {
+                    Check(Field<ViewerTheme>("theme").IsDark == dark, "theme state is incorrect");
+                    Check(ColorOf(surface.Background) == (dark ? "#202020" : "#FAFAFA"), "canvas theme is stale");
+                    var toolbar = (Grid)Field<Grid>("root").Children[0];
+                    Check(ColorOf(toolbar.Background) == (dark ? "#292929" : "#F3F3F3"), "toolbar theme is stale");
+                    Check(ColorOf(Field<Grid>("stage").Background) == ColorOf(surface.Background), "stage background differs from canvas");
+                    Check(ColorOf(Field<TextBox>("zoomInput").Background) == (dark ? "#202020" : "#FFFFFF"), "zoom input background is stale");
+                    Check(ColorOf(Field<TextBox>("zoomInput").Foreground) == (dark ? "#E8E8E8" : "#262626"), "zoom input text is stale");
+                    Check(ColorOf(Field<Border>("panel").Background) == ColorOf(toolbar.Background), "panel theme is stale");
+                    var themeButton = Field<Button>("themeToggle");
+                    Check(ColorOf(((ViewerIcon)themeButton.Content).Foreground) == (dark ? "#E8E8E8" : "#262626"), "icon contrast is stale");
+                    foreach (MenuItem item in Field<System.Collections.Generic.List<MenuItem>>("lightThemeItems")) Check(item.IsChecked == !dark, "light theme check is stale");
+                    foreach (MenuItem item in Field<System.Collections.Generic.List<MenuItem>>("darkThemeItems")) Check(item.IsChecked == dark, "dark theme check is stale");
+                    Check(Object.ReferenceEquals(surface.Bitmap, source), "theme reloaded or replaced the image");
+                    Near(surface.View.Scale, scale, "theme changed zoom"); Near(surface.View.OffsetX, x, "theme changed X"); Near(surface.View.OffsetY, y, "theme changed Y");
+                    Check(surface.PixelMode, "theme changed display mode");
+                    var menu = surface.ContextMenu; menu.ApplyTemplate(); menu.Measure(new Size(420, 650));
+                    Check(ColorOf(menu.Background) == ColorOf(toolbar.Background), "popup theme is stale");
+                    var tip = (ToolTip)themeButton.ToolTip; tip.ApplyTemplate(); tip.Measure(new Size(420, 100));
+                    Check(ColorOf(tip.Background) == ColorOf(toolbar.Background), "tooltip background is stale");
+                    Check(ColorOf(tip.Foreground) == (dark ? "#E8E8E8" : "#262626"), "tooltip text is stale");
+                    double contrast = Contrast((SolidColorBrush)themeButton.Foreground, (SolidColorBrush)toolbar.Background);
+                    Check(contrast >= 4.5, "theme text has insufficient contrast");
+                    Check(Contrast((SolidColorBrush)Field<TextBlock>("metadata").Foreground, (SolidColorBrush)toolbar.Background) >= 4.5, "secondary text has insufficient contrast");
+                };
+                Invoke("SetTheme", true); verify(true);
+                Invoke("SetTheme", false); verify(false);
+                var key = new KeyEventArgs(Keyboard.PrimaryDevice, new TestPresentationSource(), Environment.TickCount, Key.D) { RoutedEvent = Keyboard.PreviewKeyDownEvent, Source = surface };
+                Invoke("OnKey", surface, key); Check(key.Handled, "theme shortcut was not handled"); verify(true);
+                Field<Button>("themeToggle").RaiseEvent(new RoutedEventArgs(Button.ClickEvent)); verify(false);
+                Field<System.Collections.Generic.List<MenuItem>>("darkThemeItems")[0].RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent)); verify(true);
+                Field<System.Collections.Generic.List<MenuItem>>("lightThemeItems")[1].RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent)); verify(false);
+                surface.PixelMode = false;
+            });
+            Run("theme changes preserve wheel animation and typed zoom drafts", delegate
+            {
+                RaiseWheel(120); bool animating = surface.IsZoomAnimating;
+                Invoke("SetTheme", true); Check(surface.IsZoomAnimating == animating, "theme cancelled pending wheel animation");
+                FinishWheel();
+                var input = Field<TextBox>("zoomInput"); input.Text = "127.5%";
+                var key = new KeyEventArgs(Keyboard.PrimaryDevice, new TestPresentationSource(), Environment.TickCount, Key.D) { RoutedEvent = Keyboard.PreviewKeyDownEvent, Source = input };
+                Invoke("OnKey", input, key); Check(!key.Handled && Field<ViewerTheme>("theme").IsDark, "text input triggered theme shortcut");
+                Check(input.Text == "127.5%", "theme changed zoom draft");
+                Check((bool)Call("TryApplyZoom"), "theme prevented applying zoom draft");
+                Invoke("SetTheme", false);
+            });
+            Run("theme preferences round trip in isolated test files", delegate
+            {
+                string preference = Path.Combine(directory, "theme-preference.txt");
+                Check(ThemePreference.Save(preference, true) && ThemePreference.Load(preference), "dark preference did not round trip");
+                Check(ThemePreference.Save(preference, false) && !ThemePreference.Load(preference), "light preference did not round trip");
+                File.WriteAllText(preference, "unknown"); Check(!ThemePreference.Load(preference), "invalid preference did not fall back to light");
+                Check(!ThemePreference.Load(Path.Combine(directory, "missing-theme.txt")), "missing preference did not fall back to light");
+                string blocked = Path.Combine(directory, "theme-blocker"); File.WriteAllText(blocked, "unchanged");
+                Check(!ThemePreference.Save(Path.Combine(blocked, "theme.txt"), true), "unwritable preference was reported as saved");
+                Check(File.ReadAllText(blocked) == "unchanged", "preference failure modified blocking file");
+            });
+            Run("themed scrollbar supports paging and thumb movement", delegate
+            {
+                Invoke("SetTheme", true); Invoke("TogglePanel", "help"); Layout(700, 440);
+                var viewer = (ScrollViewer)Field<Border>("panel").Child;
+                ScrollBar bar = FindVerticalScrollBar(viewer);
+                Check(bar != null && bar.Maximum > 0, "help scrollbar is missing");
+                Track track = (Track)bar.Template.FindName("PART_Track", bar);
+                Check(track != null && track.Thumb != null, "themed scrollbar track is missing");
+                Check(ColorOf(bar.Background) == "#292929", "scrollbar retained light background");
+                ScrollBar.PageDownCommand.Execute(null, bar); PumpFor(40); Layout(700, 440);
+                Check(viewer.VerticalOffset > 0, "page down command did not scroll");
+                viewer.ScrollToVerticalOffset(0); PumpFor(40); Layout(700, 440);
+                track.Thumb.RaiseEvent(new DragDeltaEventArgs(0, 25) { RoutedEvent = Thumb.DragDeltaEvent });
+                PumpFor(40); Layout(700, 440);
+                Check(viewer.VerticalOffset > 0, "thumb movement did not scroll");
+                Invoke("SetTheme", false); Check(ColorOf(bar.Background) == "#F3F3F3", "scrollbar did not return to light");
+                Invoke("TogglePanel", "help"); Layout();
+            });
+            Run("navigation uses a preloaded neighbour and retains source ownership", delegate
+            {
+                window.OpenPaths(new[] { first }); WaitLoaded(first);
+                var cache = Field<ImageLoadCache<LoadedImage>>("imageCache");
+                var task = cache.LoadAsync(second);
+                PumpUntil(delegate { return task.IsCompleted; }, "neighbour preload");
+                using (var lease = task.Result)
+                {
+                    window.Navigate(1); WaitLoaded(second);
+                    Check(Object.ReferenceEquals(lease.Value, Loaded()), "navigation decoded a cached neighbour again");
+                    Check(surface.Bitmap.IsFrozen, "cached image lost frozen state");
+                }
+            });
+            Run("keep-view option preserves manual zoom and synchronizes menus", delegate
+            {
+                window.OpenPaths(new[] { first }); WaitLoaded(first); Layout();
+                Invoke("SetKeepView", true); surface.ActualSize(); surface.Zoom(1.3); surface.Pan(37, -19);
+                Point before = surface.View.ImagePointAt(surface.ActualWidth / 2, surface.ActualHeight / 2);
+                double scale = surface.View.Scale;
+                window.Navigate(1); WaitLoaded(second);
+                Near(surface.View.Scale, scale, "kept zoom");
+                Point after = surface.View.ImagePointAt(surface.ActualWidth / 2, surface.ActualHeight / 2);
+                Near(after.X, before.X, "kept center X"); Near(after.Y, before.Y, "kept center Y");
+                foreach (MenuItem item in Field<System.Collections.Generic.List<MenuItem>>("keepViewItems")) Check(item.IsChecked, "menu state is not synchronized");
+                window.OpenPaths(new[] { second }); WaitLoaded(second);
+                Check(surface.View.IsFit, "opening a new source inherited old view");
+                Invoke("SetKeepView", false); window.Navigate(-1); WaitLoaded(first);
+                Check(surface.View.IsFit, "default navigation did not fit");
+            });
+            Run("clipboard PNG retains alpha, rotates and clears disk navigation", delegate
+            {
+                byte[] pixels = { 255, 0, 0, 128, 0, 0, 255, 255, 0, 255, 0, 0, 255, 255, 255, 255, 1, 2, 3, 255, 4, 5, 6, 255 };
+                BitmapSource sample = BitmapSource.Create(3, 2, 96, 96, PixelFormats.Bgra32, null, pixels, 12); sample.Freeze();
+                var payload = ClipboardImages.CopyData(sample, ClipboardImages.EncodePng(sample));
+                window.OpenPaths(new[] { second });
+                Check(window.OpenClipboardData(payload), "clipboard image was not accepted"); PumpFor(150);
+                Check(Loaded() == null && Field<int>("index") == -1, "disk source was retained");
+                Check(Field<TextBlock>("counter").Text == "" && Field<TextBlock>("filename").Text == "剪贴板图片", "clipboard source labels are wrong");
+                Check(!Field<Button>("next").IsEnabled && !Field<Button>("previous").IsEnabled, "clipboard retained navigation");
+                clipboard.Data = null; Invoke("Rotate", 1); surface.ActualSize(); surface.Zoom(2); surface.ToggleCheckerboard();
+                BitmapSource expected = surface.Bitmap;
+                window.CopyImage(); PumpUntil(delegate { return clipboard.Data != null; }, "clipboard copy");
+                ClipboardImage copied = ClipboardImages.Read(clipboard.Data);
+                Check(copied.Bitmap.PixelWidth == 2 && copied.Bitmap.PixelHeight == 3, "copied viewport instead of oriented pixels");
+                var a = new FormatConvertedBitmap(expected, PixelFormats.Bgra32, null, 0);
+                var b = new FormatConvertedBitmap(copied.Bitmap, PixelFormats.Bgra32, null, 0);
+                byte[] wanted = new byte[24], actualPixels = new byte[24]; a.CopyPixels(wanted, 8, 0); b.CopyPixels(actualPixels, 8, 0);
+                for (int i = 0; i < wanted.Length; i++) Check(Math.Abs(wanted[i] - actualPixels[i]) <= 1, "pixel/alpha mismatch at " + i);
+                foreach (MenuItem item in Field<System.Collections.Generic.List<MenuItem>>("revealFileItems")) Check(!item.IsEnabled, "memory image offers file location");
+                Invoke("TogglePanel", "info"); Check(PanelText(Field<Border>("panel")).Contains("剪贴板"), "clipboard info source missing"); Invoke("TogglePanel", "info");
+                surface.ToggleCheckerboard();
+            });
+            Run("paste accepts files and paths, and invalid contents preserve the view", delegate
+            {
+                var fileData = new DataObject(DataFormats.FileDrop, new[] { last }); clipboard.Data = fileData;
+                window.PasteImage(); WaitLoaded(last);
+                window.RevealFile(); Check(revealedPath == last, "file reveal uses wrong source");
+                var pathData = new DataObject(DataFormats.UnicodeText, "\"" + first + "\"");
+                Check(window.OpenClipboardData(pathData), "quoted path was not accepted"); WaitLoaded(first);
+                BitmapSource original = surface.Bitmap;
+                Check(!window.OpenClipboardData(new DataObject(DataFormats.UnicodeText, "not a path")), "unrelated text treated as image");
+                Check(Object.ReferenceEquals(original, surface.Bitmap) && Loaded().Path == first, "invalid clipboard cleared current image");
+            });
+            Run("new clipboard shortcuts preserve text editing", delegate
+            {
+                window.OpenPaths(new[] { first }); WaitLoaded(first);
+                var input = Field<TextBox>("zoomInput"); SetOffscreenFocusWithin(input, true);
+                bool before = Field<bool>("keepView");
+                var key = new KeyEventArgs(Keyboard.PrimaryDevice, new TestPresentationSource(), Environment.TickCount, Key.K) { RoutedEvent = Keyboard.PreviewKeyDownEvent, Source = input };
+                window.RaiseEvent(key); Check(Field<bool>("keepView") == before && !key.Handled, "K interfered with text input");
+                SetOffscreenFocusWithin(input, false);
+            });
+            Run("WebP opens through the viewer and participates in folder navigation", delegate
+            {
+                string webpFolder = Path.Combine(directory, "webp-folder"); Directory.CreateDirectory(webpFolder);
+                string webp = Path.Combine(webpFolder, "1.webp");
+                string other = Path.Combine(webpFolder, "2.WEBP");
+                string fixture = Path.Combine(Path.GetDirectoryName(Path.GetFullPath(args[0])), "tests", "fixtures", "webp", "lossless.webp");
+                File.Copy(fixture, webp, true); File.Copy(fixture, other, true);
+                window.OpenPaths(new[] { webp }); WaitLoaded(webp);
+                Check(surface.Bitmap.IsFrozen && Field<TextBlock>("counter").Text == "1 / 2", "WebP viewer/list integration failed");
+                window.Navigate(1); WaitLoaded(other);
+                Check(Field<TextBlock>("counter").Text == "2 / 2", "WebP folder navigation failed");
+            });
             Run("loaded and empty offscreen previews", delegate
             {
                 window.OpenPaths(new[] { second }); WaitLoaded(second); Layout(); surface.Fit();
                 SavePreview(Path.Combine(Path.GetFullPath(args[0]), "viewer-preview.png"));
-                var emptyWindow = new MainWindow(new string[0]);
+                SavePreview(Path.Combine(Path.GetFullPath(args[0]), "viewer-light-preview.png"));
+                Invoke("SetTheme", true);
+                SavePreview(Path.Combine(Path.GetFullPath(args[0]), "viewer-dark-preview.png"));
+                Invoke("TogglePanel", "info");
+                SavePreview(Path.Combine(Path.GetFullPath(args[0]), "viewer-dark-info-preview.png"));
+                Invoke("TogglePanel", "info");
+                Invoke("TogglePanel", "help");
+                SavePreview(Path.Combine(Path.GetFullPath(args[0]), "viewer-dark-help-preview.png"));
+                Invoke("TogglePanel", "help"); Invoke("SetTheme", false);
+                var emptyWindow = new MainWindow(new string[0], false);
                 SavePreview(Path.Combine(Path.GetFullPath(args[0]), "viewer-empty-preview.png"), emptyWindow);
                 emptyWindow.Close();
             });
@@ -242,6 +426,32 @@ namespace FastImageViewer
                 if (element != null) result += " " + PanelText(element);
             }
             return result;
+        }
+        private static string ColorOf(Brush brush)
+        {
+            Color color = ((SolidColorBrush)brush).Color;
+            return "#" + color.R.ToString("X2") + color.G.ToString("X2") + color.B.ToString("X2");
+        }
+        private static ScrollBar FindVerticalScrollBar(DependencyObject parent)
+        {
+            var bar = parent as ScrollBar;
+            if (bar != null && bar.Orientation == Orientation.Vertical && bar.Visibility == Visibility.Visible) return bar;
+            for (int i = 0; i < VisualTreeHelper.GetChildrenCount(parent); i++)
+            {
+                var found = FindVerticalScrollBar(VisualTreeHelper.GetChild(parent, i));
+                if (found != null) return found;
+            }
+            return null;
+        }
+        private static double Contrast(SolidColorBrush a, SolidColorBrush b)
+        {
+            Func<Color, double> luminance = delegate(Color c)
+            {
+                Func<byte, double> linear = delegate(byte value) { double v = value / 255.0; return v <= 0.04045 ? v / 12.92 : Math.Pow((v + 0.055) / 1.055, 2.4); };
+                return .2126 * linear(c.R) + .7152 * linear(c.G) + .0722 * linear(c.B);
+            };
+            double x = luminance(a.Color), y = luminance(b.Color);
+            return (Math.Max(x, y) + .05) / (Math.Min(x, y) + .05);
         }
         private static LoadedImage Loaded() { return Field<LoadedImage>("loaded"); }
         private static T Field<T>(string name) { return (T)typeof(MainWindow).GetField(name, BindingFlags.Instance | BindingFlags.NonPublic).GetValue(window); }

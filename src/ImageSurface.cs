@@ -10,6 +10,12 @@ namespace FastImageViewer
     // The viewport works in original image pixels; the bitmap can be a bounded preview.
     public sealed class ImageSurface : FrameworkElement
     {
+        public static readonly DependencyProperty BackgroundProperty = System.Windows.Controls.Panel.BackgroundProperty.AddOwner(
+            typeof(ImageSurface), new FrameworkPropertyMetadata(Brushes.WhiteSmoke, FrameworkPropertyMetadataOptions.AffectsRender));
+        public static readonly DependencyProperty CheckerBrushProperty = DependencyProperty.Register("CheckerBrush", typeof(Brush), typeof(ImageSurface),
+            new FrameworkPropertyMetadata(null, FrameworkPropertyMetadataOptions.AffectsRender));
+        public Brush Background { get { return (Brush)GetValue(BackgroundProperty); } set { SetValue(BackgroundProperty, value); } }
+        public Brush CheckerBrush { get { return (Brush)GetValue(CheckerBrushProperty); } set { SetValue(CheckerBrushProperty, value); } }
         public readonly Viewport View = new Viewport();
         public BitmapSource Bitmap { get; private set; }
         public event Action ViewChanged;
@@ -61,12 +67,12 @@ namespace FastImageViewer
             }
         }
 
-        public void SetImage(BitmapSource bitmap, int width, int height)
+        public void SetImage(BitmapSource bitmap, int width, int height, bool preserveView = false)
         {
             CancelWheelZoom();
             Bitmap = bitmap;
             View.DeviceScale = DpiScale;
-            View.SetImage(width, height);
+            View.SetImage(width, height, preserveView);
             Cursor = Cursors.Hand;
             Changed();
         }
@@ -97,10 +103,10 @@ namespace FastImageViewer
 
         protected override void OnRender(DrawingContext dc)
         {
-            dc.DrawRectangle(new SolidColorBrush(Color.FromRgb(32, 32, 32)), null, new Rect(RenderSize));
+            dc.DrawRectangle(Background, null, new Rect(RenderSize));
             if (Bitmap == null) return;
             var rect = new Rect(View.OffsetX, View.OffsetY, View.ImageWidth * View.Scale, View.ImageHeight * View.Scale);
-            if (checkerboard) dc.DrawRectangle(checker, null, rect);
+            if (checkerboard) dc.DrawRectangle(CheckerBrush ?? checker, null, rect);
             RenderOptions.SetBitmapScalingMode(this, PixelMode ? BitmapScalingMode.NearestNeighbor : (IsZoomAnimating ? BitmapScalingMode.LowQuality : BitmapScalingMode.HighQuality));
             dc.DrawImage(Bitmap, rect);
         }

@@ -6,8 +6,8 @@
     <ImplicitUsings>disable</ImplicitUsings>
     <RootNamespace>FastImageViewer.Desktop</RootNamespace>
     <AssemblyName>FastImageViewer</AssemblyName>
-    <Version>0.2.1</Version>
-    <AssemblyTitle>拾图 / Fast Image Viewer</AssemblyTitle>
+    <Version>0.3.0</Version>
+    <AssemblyTitle>Fast Image Viewer</AssemblyTitle>
     <Description>Linux and macOS build of Fast Image Viewer.</Description>
     <ApplicationIcon />
   </PropertyGroup>

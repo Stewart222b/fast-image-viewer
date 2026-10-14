@@ -21,6 +21,7 @@ namespace FastImageViewer.CrossTests
         {
             samples = Path.Combine(args[0], "samples");
             Directory.CreateDirectory(samples);
+            Run("shared image-cache regressions", delegate { ImageLoadCacheTests.RunAll(args[0]); });
             Run("mouse zoom anchor", TestZoom);
             Run("fit and resize", TestFit);
             Run("custom resize center and pan", TestPanResize);
@@ -66,6 +67,12 @@ namespace FastImageViewer.CrossTests
             Run("checkerboard work stays within visible bounds", DesktopRegressionTests.TestCheckerboard);
             Run("monitor scaling refreshes fit and physical zoom", DesktopRegressionTests.TestScaling);
             Run("detached canvas ignores former monitor scaling", DesktopRegressionTests.TestDetach);
+            Run("clipboard paste and displayed pixel copy", DesktopWorkflowTests.TestClipboardPixels);
+            Run("keep manual zoom and normalized position across images", DesktopWorkflowTests.TestPreserveView);
+            Run("file reveal uses literal platform arguments", DesktopWorkflowTests.TestRevealArguments);
+            Run("clipboard failure, text focus and closed response", DesktopWorkflowTests.TestClipboardFailureAndFocus);
+            Run("WebP folder browsing and natural order", delegate { DesktopWorkflowTests.TestWebpDirectory(samples); });
+            Run("clipboard file priority and keep-view navigation", delegate { DesktopWorkflowTests.TestFileClipboardAndNavigation(samples); });
             Console.WriteLine("RESULT: " + passed + " passed, " + failed + " failed");
             return failed == 0 ? 0 : 1;
         }

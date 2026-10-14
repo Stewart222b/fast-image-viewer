@@ -35,7 +35,7 @@ for rid in "${rids[@]}"; do
   dotnet publish "$project" -c Release -r "$rid" --self-contained true \
     -p:DebugType=None -p:DebugSymbols=false -o "$out"
   cp -f "$root/cross/DIST.txt" "$out/README.txt"
-  archive="$root/artifacts/FastImageViewer-0.2.1-$rid.tar.gz"
+  archive="$root/artifacts/FastImageViewer-0.3.0-$rid.tar.gz"
   tar -C "$out" -czf "$archive" .
   echo "Built $archive"
 done

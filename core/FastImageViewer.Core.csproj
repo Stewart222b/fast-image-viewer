@@ -7,7 +7,7 @@
     <ImplicitUsings>disable</ImplicitUsings>
     <RootNamespace>FastImageViewer</RootNamespace>
     <AssemblyName>FastImageViewer.Core</AssemblyName>
-    <Version>0.2.1</Version>
+    <Version>0.3.0</Version>
     <Description>Shared viewport, wheel zoom, and file list for Fast Image Viewer.</Description>
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
   </PropertyGroup>

@@ -64,12 +64,12 @@ namespace FastImageViewer.Desktop
             timer.Tick += delegate { AdvanceWheelZoom(Timestamp); };
         }
 
-        public void SetImage(Bitmap image, int width, int height)
+        public void SetImage(Bitmap image, int width, int height, bool preserveView = false)
         {
             CancelWheelZoom();
             ReplaceBitmap(image);
             view.DeviceScale = DpiScale;
-            view.SetImage(width, height);
+            view.SetImage(width, height, preserveView);
             Cursor = new Cursor(StandardCursorType.Hand);
             Changed();
         }

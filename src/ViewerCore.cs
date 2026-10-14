@@ -22,6 +22,7 @@ namespace FastImageViewer
         public double DeviceScale { get { return Inner.DeviceScale; } set { Inner.DeviceScale = value; } }
 
         public void SetImage(double width, double height) { Inner.SetImage(width, height); }
+        public void SetImage(double width, double height, bool preserveView) { Inner.SetImage(width, height, preserveView); }
         public void Resize(double width, double height) { Inner.Resize(width, height); }
         public void Fit() { Inner.Fit(); }
         public void ActualSize() { Inner.ActualSize(); }
@@ -64,6 +65,8 @@ namespace FastImageViewer
         {
             if (!ImageFiles.IsSupported(path)) throw new NotSupportedException("不支持该图片格式。");
             string fullPath = System.IO.Path.GetFullPath(path);
+            if (String.Equals(System.IO.Path.GetExtension(fullPath), ".webp", StringComparison.OrdinalIgnoreCase))
+                return WebpDecoder.Load(fullPath);
             int width, height, orientation;
             long fileSize;
             // DelayCreation reads dimensions and metadata without materializing the full bitmap.

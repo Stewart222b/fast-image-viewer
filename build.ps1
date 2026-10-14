@@ -1,4 +1,4 @@
-param([string]$OutputDirectory = 'dist')
+﻿param([string]$OutputDirectory = 'dist')
 $ErrorActionPreference = 'Stop'
 try {
     $root = $PSScriptRoot
@@ -13,12 +13,18 @@ try {
     $sources += @(Get-ChildItem -LiteralPath (Join-Path $root 'core') -Filter '*.cs' -File | ForEach-Object { $_.FullName })
     if ($sources.Count -eq 0) { throw 'No C# source files were found in src.' }
     $arguments = @('/nologo', '/target:winexe', '/platform:x64', '/optimize+', '/langversion:5', ('/out:' + (Join-Path $output 'FastImageViewer.exe')), ('/win32manifest:' + (Join-Path $root 'app.manifest')), '/reference:System.dll', '/reference:System.Core.dll', '/reference:System.Xaml.dll', '/reference:System.Drawing.dll', '/reference:System.Windows.Forms.dll')
+    $arguments += '/resource:' + (Join-Path $root 'third-party\libwebp\FastImageViewerWebp.dll') + ',FastImageViewer.Codecs.Webp'
     foreach ($assembly in @('WindowsBase.dll', 'PresentationCore.dll', 'PresentationFramework.dll')) {
         $arguments += '/reference:' + (Join-Path $wpf $assembly)
     }
     & $compiler @arguments @sources
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     Copy-Item -LiteralPath (Join-Path $root 'src\App.config') -Destination (Join-Path $output 'FastImageViewer.exe.config') -Force
+    $noticeDirectory = Join-Path $output 'third-party\libwebp'
+    New-Item -ItemType Directory -Path $noticeDirectory -Force | Out-Null
+    foreach ($notice in @('LICENSE', 'PATENTS', 'AUTHORS', 'NOTICE.md')) {
+        Copy-Item -LiteralPath (Join-Path $root ('third-party\libwebp\' + $notice)) -Destination (Join-Path $noticeDirectory $notice) -Force
+    }
     Write-Host ('Built ' + (Join-Path $output 'FastImageViewer.exe'))
     exit 0
 } catch {

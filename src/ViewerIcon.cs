@@ -8,21 +8,23 @@ namespace FastImageViewer
     internal sealed class ViewerIcon : FrameworkElement
     {
         private readonly string kind;
-        private readonly Pen pen;
+        private Pen pen;
+        public static readonly DependencyProperty ForegroundProperty = System.Windows.Documents.TextElement.ForegroundProperty.AddOwner(
+            typeof(ViewerIcon), new FrameworkPropertyMetadata(Brushes.Black, FrameworkPropertyMetadataOptions.AffectsRender));
+        public Brush Foreground { get { return (Brush)GetValue(ForegroundProperty); } set { SetValue(ForegroundProperty, value); } }
 
         public ViewerIcon(string kind)
         {
             this.kind = kind;
             Width = Height = 16;
             IsHitTestVisible = false;
-            pen = new Pen(new SolidColorBrush(Color.FromRgb(65, 65, 65)), 1.25);
-            pen.StartLineCap = pen.EndLineCap = PenLineCap.Round;
-            pen.LineJoin = PenLineJoin.Round;
-            pen.Freeze();
+            SetResourceReference(ForegroundProperty, "Theme.Text");
         }
 
         protected override void OnRender(DrawingContext dc)
         {
+            pen = new Pen(Foreground, 1.25) { StartLineCap = PenLineCap.Round, EndLineCap = PenLineCap.Round, LineJoin = PenLineJoin.Round };
+            pen.Freeze();
             switch (kind)
             {
                 case "open":
@@ -45,6 +47,9 @@ namespace FastImageViewer
                     for (int x = 3; x <= 13; x += 5) dc.DrawEllipse(pen.Brush, null, new Point(x, 8), 1, 1); break;
                 case "close": Path(dc, "M4,4 L12,12 M12,4 L4,12"); break;
                 case "down": Path(dc, "M4,6 L8,10 12,6"); break;
+                case "theme":
+                    dc.DrawEllipse(null, pen, new Point(8, 8), 6, 6);
+                    dc.DrawGeometry(pen.Brush, null, Geometry.Parse("M8,2 A6,6 0 0 0 8,14 Z")); break;
             }
         }
 

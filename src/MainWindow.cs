@@ -12,6 +12,7 @@ using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using Microsoft.Win32;
+using FastImageViewer.Core;
 
 namespace FastImageViewer
 {
@@ -20,10 +21,16 @@ namespace FastImageViewer
         private readonly ImageSurface surface = new ImageSurface();
         private readonly Grid root = new Grid();
         private readonly Grid stage = new Grid();
-        private readonly TextBlock filename = Text("", 12, "#404040");
-        private readonly TextBlock folder = Text("", 12, "#666666");
-        private readonly TextBlock metadata = Text("", 12, "#666666");
-        private readonly TextBlock counter = Text("", 12, "#404040");
+        private readonly TextBlock filename = Text("", 12);
+        private readonly TextBlock folder = Text("", 12, true);
+        private readonly TextBlock metadata = Text("", 12, true);
+        private readonly TextBlock counter = Text("", 12);
+        private readonly ViewerTheme theme = new ViewerTheme();
+        private readonly ResourceDictionary popupStyles = ViewerTheme.PopupStyles();
+        private readonly bool rememberTheme;
+        private readonly Button themeToggle;
+        private readonly List<MenuItem> lightThemeItems = new List<MenuItem>();
+        private readonly List<MenuItem> darkThemeItems = new List<MenuItem>();
         private readonly TextBox zoomInput = new TextBox();
         private readonly Button displayMode = new Button();
         private readonly List<MenuItem> smoothModeItems = new List<MenuItem>();
@@ -31,14 +38,24 @@ namespace FastImageViewer
         private bool? displayedPixelMode;
         private readonly Border welcome;
         private readonly Border message;
-        private readonly TextBlock messageText = Text("", 13, "#303030");
+        private readonly TextBlock messageText = Text("", 13);
         private readonly Border panel;
         private readonly StackPanel panelBody = new StackPanel();
         private readonly Button previous;
         private readonly Button next;
         private readonly Button fit;
         private readonly Button actual;
-        private readonly SemaphoreSlim decodeGate = new SemaphoreSlim(1, 1);
+        private readonly ImageLoadCache<LoadedImage> imageCache;
+        private ImageLoadCache<LoadedImage>.Lease imageLease;
+        private CancellationTokenSource loadCancellation;
+        private readonly IViewerClipboard clipboard;
+        private readonly Action<string> revealFile;
+        private ClipboardImage clipboardImage;
+        private bool keepView;
+        private int clipboardOperationId;
+        private readonly List<MenuItem> keepViewItems = new List<MenuItem>();
+        private readonly List<MenuItem> copyImageItems = new List<MenuItem>();
+        private readonly List<MenuItem> revealFileItems = new List<MenuItem>();
         private List<string> files = new List<string>();
         private LoadedImage loaded;
         private int index = -1;
@@ -55,12 +72,21 @@ namespace FastImageViewer
         private WindowStyle savedStyle;
         private ResizeMode savedResize;
 
-        public MainWindow(string[] args)
+        public MainWindow(string[] args, bool rememberTheme = true, IViewerClipboard clipboard = null, Action<string> revealFile = null)
         {
-            Title = "拾图";
+            this.clipboard = clipboard ?? new SystemViewerClipboard();
+            this.revealFile = revealFile ?? FileLocation.Reveal;
+            imageCache = new ImageLoadCache<LoadedImage>(ImageLoader.Load,
+                image => (long)image.Bitmap.PixelWidth * image.Bitmap.PixelHeight * Math.Max(1, (image.Bitmap.Format.BitsPerPixel + 7) / 8));
+            this.rememberTheme = rememberTheme;
+            if (rememberTheme) theme.Apply(ThemePreference.Load(ThemePreference.DefaultPath));
+            Resources.MergedDictionaries.Add(theme.Resources);
+            Resources.MergedDictionaries.Add(popupStyles);
+            Title = "Fast Image Viewer";
             Width = 1100; Height = 760; MinWidth = 700; MinHeight = 440;
             WindowStartupLocation = WindowStartupLocation.CenterScreen;
-            Background = Brush("#202020"); Foreground = Brush("#262626");
+            SetResourceReference(BackgroundProperty, "Theme.Canvas");
+            SetResourceReference(ForegroundProperty, "Theme.Text");
             FontFamily = new FontFamily("Segoe UI, Microsoft YaHei UI");
             UseLayoutRounding = true; SnapsToDevicePixels = true;
             AllowDrop = true;
@@ -70,7 +96,8 @@ namespace FastImageViewer
             root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
             Content = root;
 
-            var toolbar = new Grid { Background = Brush("#F3F3F3"), Height = 40 };
+            var toolbar = new Grid { Height = 40 };
+            toolbar.SetResourceReference(Grid.BackgroundProperty, "Theme.Chrome");
             toolbar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
             toolbar.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
             toolbar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
@@ -78,9 +105,10 @@ namespace FastImageViewer
             left.Children.Add(IconButton("open", "打开图片  Ctrl+O", OpenFile));
             var fileOptions = IconButton("down", "文件菜单", delegate { });
             fileOptions.MinWidth = 20;
-            var fileMenu = new ContextMenu();
+            var fileMenu = CreateMenu();
             AddMenu(fileMenu, "打开图片…", "Ctrl+O", OpenFile);
             AddMenu(fileMenu, "打开文件夹…", "Ctrl+Shift+O", OpenFolder);
+            AddMenu(fileMenu, "粘贴图片", "Ctrl+V", PasteImage);
             fileOptions.Click += delegate { OpenMenu(fileMenu, fileOptions); };
             left.Children.Add(fileOptions);
             left.Children.Add(Divider());
@@ -97,10 +125,11 @@ namespace FastImageViewer
             zoomInput.FontSize = 12; zoomInput.FontFamily = FontFamily;
             zoomInput.TextAlignment = TextAlignment.Center;
             zoomInput.VerticalContentAlignment = VerticalAlignment.Center;
-            zoomInput.Background = Brushes.White; zoomInput.Foreground = Brush("#262626");
-            zoomInput.BorderBrush = Brush("#B8B8B8"); zoomInput.BorderThickness = new Thickness(1);
+            zoomInput.SetResourceReference(Control.BackgroundProperty, "Theme.Input");
+            zoomInput.SetResourceReference(Control.ForegroundProperty, "Theme.Text");
+            zoomInput.SetResourceReference(Control.BorderBrushProperty, "Theme.Border"); zoomInput.BorderThickness = new Thickness(1);
             zoomInput.Padding = new Thickness(2, 0, 2, 0); zoomInput.Margin = new Thickness(4, 0, 4, 0);
-            zoomInput.ToolTip = "输入缩放百分比，按 Enter 应用";
+            SetHint(zoomInput, "输入缩放百分比，按 Enter 应用");
             AutomationProperties.SetName(zoomInput, "缩放百分比");
             zoomInput.GotKeyboardFocus += delegate { zoomInput.SelectAll(); };
             zoomInput.TextChanged += delegate { if (!syncingZoomText) zoomTextDirty = true; };
@@ -112,6 +141,8 @@ namespace FastImageViewer
             toolbar.Children.Add(left);
             var right = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 6, 0) };
             right.Children.Add(IconButton("info", "图片信息  I", delegate { TogglePanel("info"); }));
+            themeToggle = IconButton("theme", "切换浅色 / 深色主题  D", delegate { SetTheme(!theme.IsDark); });
+            right.Children.Add(themeToggle);
             right.Children.Add(IconButton("fullscreen", "全屏 / 返回窗口  F11", ToggleFullscreen));
             var more = IconButton("more", "更多操作", delegate { });
             var moreMenu = BuildContextMenu();
@@ -123,17 +154,24 @@ namespace FastImageViewer
             stage.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
             stage.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
             Grid.SetRow(stage, 1); root.Children.Add(stage);
+            stage.SetResourceReference(Grid.BackgroundProperty, "Theme.Canvas");
+            surface.SetResourceReference(ImageSurface.BackgroundProperty, "Theme.Canvas");
+            surface.SetResourceReference(ImageSurface.CheckerBrushProperty, "Theme.Checker");
             stage.Children.Add(surface);
             welcome = BuildWelcome(); stage.Children.Add(welcome);
-            message = new Border { Background = Brush("#F3F3F3"), Padding = new Thickness(18, 12, 18, 12), HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center, Visibility = Visibility.Collapsed, MaxWidth = 500, Margin = new Thickness(16) };
+            message = new Border { Padding = new Thickness(18, 12, 18, 12), HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center, Visibility = Visibility.Collapsed, MaxWidth = 500, Margin = new Thickness(16) };
+            message.SetResourceReference(Border.BackgroundProperty, "Theme.Chrome");
             messageText.TextWrapping = TextWrapping.Wrap; messageText.TextAlignment = TextAlignment.Center;
             message.Child = messageText; stage.Children.Add(message);
-            panel = new Border { Background = Brush("#F3F3F3"), BorderBrush = Brush("#D1D1D1"), BorderThickness = new Thickness(1, 0, 0, 0), Width = 300, Padding = new Thickness(16, 12, 16, 12), Visibility = Visibility.Collapsed };
+            panel = new Border { BorderThickness = new Thickness(1, 0, 0, 0), Width = 300, Padding = new Thickness(16, 12, 16, 12), Visibility = Visibility.Collapsed };
+            panel.SetResourceReference(Border.BackgroundProperty, "Theme.Chrome");
+            panel.SetResourceReference(Border.BorderBrushProperty, "Theme.Border");
             panel.Child = new ScrollViewer { Content = panelBody, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
             Grid.SetColumn(panel, 1);
             stage.Children.Add(panel);
 
-            var bottom = new Grid { Height = 26, Background = Brush("#F3F3F3") };
+            var bottom = new Grid { Height = 26 };
+            bottom.SetResourceReference(Grid.BackgroundProperty, "Theme.Chrome");
             bottom.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
             bottom.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
             bottom.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
@@ -162,20 +200,30 @@ namespace FastImageViewer
                 if (paths != null) OpenPaths(paths);
                 e.Handled = true;
             };
-            Closed += delegate { closed = true; requestId++; };
+            Closed += delegate { closed = true; requestId++; CancelLoad(); ReleaseImageLease(); imageCache.Dispose(); };
             Loaded += delegate { surface.Focus(); if (args.Length > 0) OpenPaths(args); };
-            UpdateNavigation(); UpdateViewStatus();
+            SourceInitialized += delegate { theme.ApplyCaption(this); };
+            UpdateThemeState(); UpdateNavigation(); UpdateViewStatus();
         }
 
-        private static SolidColorBrush Brush(string value) { var b = (SolidColorBrush)new BrushConverter().ConvertFromString(value); b.Freeze(); return b; }
-        private static TextBlock Text(string value, double size, string color) { return new TextBlock { Text = value, FontSize = size, Foreground = Brush(color) }; }
-        private static Border Divider() { return new Border { Width = 1, Height = 18, Background = Brush("#D1D1D1"), Margin = new Thickness(6, 0, 6, 0), VerticalAlignment = VerticalAlignment.Center }; }
+        private static TextBlock Text(string value, double size, bool muted = false)
+        {
+            var text = new TextBlock { Text = value, FontSize = size };
+            text.SetResourceReference(TextBlock.ForegroundProperty, muted ? "Theme.Muted" : "Theme.Text");
+            return text;
+        }
+        private static Border Divider()
+        {
+            var divider = new Border { Width = 1, Height = 18, Margin = new Thickness(6, 0, 6, 0), VerticalAlignment = VerticalAlignment.Center };
+            divider.SetResourceReference(Border.BackgroundProperty, "Theme.Border");
+            return divider;
+        }
 
         private Style ButtonStyle()
         {
             var style = new Style(typeof(Button));
             style.Setters.Add(new Setter(Control.BackgroundProperty, Brushes.Transparent));
-            style.Setters.Add(new Setter(Control.ForegroundProperty, Brush("#262626")));
+            style.Setters.Add(new Setter(Control.ForegroundProperty, new DynamicResourceExtension("Theme.Text")));
             style.Setters.Add(new Setter(Control.BorderThicknessProperty, new Thickness(0)));
             style.Setters.Add(new Setter(Control.PaddingProperty, new Thickness(6, 0, 6, 0)));
             style.Setters.Add(new Setter(Control.FontSizeProperty, 12.0));
@@ -185,7 +233,7 @@ namespace FastImageViewer
             border.Name = "ButtonBorder";
             border.SetValue(Border.CornerRadiusProperty, new CornerRadius(2));
             border.SetValue(Border.BackgroundProperty, new TemplateBindingExtension(Control.BackgroundProperty));
-            border.SetValue(Border.BorderBrushProperty, SystemColors.HighlightBrush);
+            border.SetResourceReference(Border.BorderBrushProperty, "Theme.Focus");
             border.SetValue(Border.BorderThicknessProperty, new Thickness(0));
             border.SetValue(Border.PaddingProperty, new TemplateBindingExtension(Control.PaddingProperty));
             var content = new FrameworkElementFactory(typeof(ContentPresenter));
@@ -194,7 +242,7 @@ namespace FastImageViewer
             border.AppendChild(content);
             var template = new ControlTemplate(typeof(Button)) { VisualTree = border };
             var hover = new Trigger { Property = UIElement.IsMouseOverProperty, Value = true };
-            hover.Setters.Add(new Setter(Border.BackgroundProperty, Brush("#E1E1E1"), "ButtonBorder"));
+            hover.Setters.Add(new Setter(Border.BackgroundProperty, new DynamicResourceExtension("Theme.Hover"), "ButtonBorder"));
             template.Triggers.Add(hover);
             var focus = new Trigger { Property = UIElement.IsKeyboardFocusedProperty, Value = true };
             focus.Setters.Add(new Setter(Border.BorderThicknessProperty, new Thickness(1), "ButtonBorder"));
@@ -208,7 +256,8 @@ namespace FastImageViewer
 
         private Button Button(string label, string hint, Action action, double width)
         {
-            var button = new Button { Content = label, ToolTip = hint, MinWidth = width, Height = 32 };
+            var button = new Button { Content = label, MinWidth = width, Height = 32 };
+            SetHint(button, hint);
             AutomationProperties.SetName(button, hint);
             button.Click += delegate { action(); };
             ToolTipService.SetInitialShowDelay(button, 300);
@@ -230,12 +279,52 @@ namespace FastImageViewer
             menu.IsOpen = true;
         }
 
+        private ContextMenu CreateMenu()
+        {
+            var menu = new ContextMenu();
+            menu.Resources.MergedDictionaries.Add(theme.Resources);
+            menu.Resources.MergedDictionaries.Add(popupStyles);
+            return menu;
+        }
+
+        private void SetHint(FrameworkElement target, string hint)
+        {
+            var tip = target.ToolTip as ToolTip;
+            if (tip == null)
+            {
+                tip = new ToolTip();
+                tip.Resources.MergedDictionaries.Add(theme.Resources);
+                tip.Resources.MergedDictionaries.Add(popupStyles);
+                target.ToolTip = tip;
+            }
+            tip.Content = hint;
+        }
+
+        private void SetTheme(bool dark)
+        {
+            if (theme.IsDark != dark) theme.Apply(dark);
+            UpdateThemeState();
+            if (rememberTheme && !ThemePreference.Save(ThemePreference.DefaultPath, dark))
+                ShowMessage("主题已切换，但偏好未能保存。下次打开可能恢复默认主题。");
+        }
+
+        private void UpdateThemeState()
+        {
+            foreach (var item in lightThemeItems) item.IsChecked = !theme.IsDark;
+            foreach (var item in darkThemeItems) item.IsChecked = theme.IsDark;
+            SetHint(themeToggle, (theme.IsDark ? "当前：深色主题。切换为浅色主题" : "当前：浅色主题。切换为深色主题") + "  D");
+            AutomationProperties.SetName(themeToggle, theme.IsDark ? "当前深色主题，切换为浅色主题" : "当前浅色主题，切换为深色主题");
+            theme.ApplyCaption(this);
+        }
+
         private Border BuildWelcome()
         {
             var box = new Border { HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
             var body = new StackPanel();
-            body.Children.Add(Text("拖入图片，或打开文件", 14, "#BBBBBB"));
-            var open = new Button { Content = "打开图片…", Height = 30, MinWidth = 106, Foreground = Brush("#262626"), Background = Brush("#F3F3F3"), Margin = new Thickness(0, 16, 0, 0), HorizontalAlignment = HorizontalAlignment.Center, ToolTip = "打开图片  Ctrl+O" };
+            body.Children.Add(Text("拖入图片，或打开文件", 14, true));
+            var open = new Button { Content = "打开图片…", Height = 30, MinWidth = 106, Margin = new Thickness(0, 16, 0, 0), HorizontalAlignment = HorizontalAlignment.Center };
+            open.SetResourceReference(Control.BackgroundProperty, "Theme.Chrome");
+            SetHint(open, "打开图片  Ctrl+O");
             open.Click += delegate { OpenFile(); };
             AutomationProperties.SetName(open, "打开图片"); body.Children.Add(open);
             box.Child = body; return box;
@@ -243,12 +332,19 @@ namespace FastImageViewer
 
         private ContextMenu BuildContextMenu()
         {
-            var menu = new ContextMenu();
+            var menu = CreateMenu();
             AddMenu(menu, "打开图片", "Ctrl+O", OpenFile);
             AddMenu(menu, "打开文件夹", "Ctrl+Shift+O", OpenFolder);
+            AddMenu(menu, "粘贴图片", "Ctrl+V", PasteImage);
+            var copyImage = new MenuItem { Header = "复制图片", InputGestureText = "Ctrl+C", IsEnabled = HasReadyImage };
+            copyImage.Click += delegate { CopyImage(); }; menu.Items.Add(copyImage); copyImageItems.Add(copyImage);
+            var reveal = new MenuItem { Header = "在资源管理器中定位", InputGestureText = "Ctrl+Enter", IsEnabled = loaded != null };
+            reveal.Click += delegate { RevealFile(); }; menu.Items.Add(reveal); revealFileItems.Add(reveal);
             menu.Items.Add(new Separator());
             AddMenu(menu, "适应窗口", "F", surface.Fit);
             AddMenu(menu, "实际像素", "0", surface.ActualSize);
+            var keep = new MenuItem { Header = "保持缩放与位置", InputGestureText = "K", IsCheckable = true, IsChecked = keepView };
+            keep.Click += delegate { SetKeepView(!keepView); }; menu.Items.Add(keep); keepViewItems.Add(keep);
             AddMenu(menu, "顺时针旋转", "R", delegate { Rotate(1); });
             var modes = new MenuItem { Header = "显示模式", InputGestureText = "P" };
             var smooth = new MenuItem { Header = "平滑模式（适合照片）", IsCheckable = true, IsChecked = !surface.PixelMode };
@@ -258,6 +354,13 @@ namespace FastImageViewer
             smoothModeItems.Add(smooth); pixelModeItems.Add(pixel);
             modes.Items.Add(smooth); modes.Items.Add(pixel); menu.Items.Add(modes);
             AddMenu(menu, "透明背景棋盘", "B", surface.ToggleCheckerboard);
+            var themes = new MenuItem { Header = "主题", InputGestureText = "D" };
+            var light = new MenuItem { Header = "浅色", IsCheckable = true, IsChecked = !theme.IsDark };
+            var dark = new MenuItem { Header = "深色", IsCheckable = true, IsChecked = theme.IsDark };
+            light.Click += delegate { SetTheme(false); };
+            dark.Click += delegate { SetTheme(true); };
+            lightThemeItems.Add(light); darkThemeItems.Add(dark);
+            themes.Items.Add(light); themes.Items.Add(dark); menu.Items.Add(themes);
             menu.Items.Add(new Separator());
             AddMenu(menu, "全屏", "F11", ToggleFullscreen);
             AddMenu(menu, "隐藏 / 显示工具栏", "T", ToggleChrome);
@@ -297,6 +400,7 @@ namespace FastImageViewer
         public async void OpenPaths(string[] paths)
         {
             int version = ++requestId;
+            CancelLoad(); imageCache.Preload(new string[0]);
             files = new List<string>(); index = -1; UpdateNavigation();
             ResetDisplay();
             welcome.Visibility = Visibility.Collapsed;
@@ -310,7 +414,7 @@ namespace FastImageViewer
                 });
                 if (closed || version != requestId) return;
                 files = list;
-                if (files.Count == 0) { ResetDisplay(); ShowMessage("没有找到可查看的图片。\n请打开 JPG、PNG、BMP、GIF、TIFF 或 ICO 文件。"); return; }
+                if (files.Count == 0) { ResetDisplay(); ShowMessage("没有找到可查看的图片。\n请打开 JPG、PNG、WebP、BMP、GIF、TIFF 或 ICO 文件。"); return; }
                 string selected = paths.Length == 1 && File.Exists(paths[0]) ? Path.GetFullPath(paths[0]) : null;
                 int selectedIndex = selected == null ? 0 : files.FindIndex(p => string.Equals(p, selected, StringComparison.OrdinalIgnoreCase));
                 ShowIndex(Math.Max(0, selectedIndex));
@@ -328,52 +432,75 @@ namespace FastImageViewer
         private async void ShowIndex(int target)
         {
             if (target < 0 || target >= files.Count) return;
+            bool preserve = keepView && surface.Bitmap != null;
             index = target;
             int version = ++requestId;
+            CancelLoad();
+            loadCancellation = new CancellationTokenSource();
+            CancellationToken cancellation = loadCancellation.Token;
+            imageCache.Preload(new string[0]);
             string path = files[index];
-            loaded = null;
+            loaded = null; clipboardImage = null; UpdateActionStates();
             if (panelKind == "info") BuildPanel();
             surface.CancelWheelZoom();
             userTurns = 0;
-            filename.Text = Path.GetFileName(path); filename.ToolTip = path;
+            filename.Text = Path.GetFileName(path); SetHint(filename, path);
             folder.Text = Path.GetDirectoryName(path);
-            Title = Path.GetFileName(path) + " - 拾图";
+            Title = Path.GetFileName(path) + " - Fast Image Viewer";
             metadata.Text = "正在打开…";
             UpdateNavigation();
             message.Visibility = Visibility.Collapsed;
             ShowLoadingDelayed(version);
+            ImageLoadCache<LoadedImage>.Lease nextLease = null;
             try
             {
-                LoadedImage result = null;
-                await decodeGate.WaitAsync();
-                try
-                {
-                    if (closed || version != requestId) return;
-                    result = await Task.Run(delegate { return ImageLoader.Load(path); });
-                }
-                finally { decodeGate.Release(); }
+                nextLease = await imageCache.LoadAsync(path, cancellation);
                 if (closed || version != requestId) return;
+                LoadedImage result = nextLease.Value;
                 loaded = result;
-                ApplyOrientation();
+                ApplyOrientation(preserve);
+                ReleaseImageLease(); imageLease = nextLease; nextLease = null;
                 surface.Opacity = 1;
                 message.Visibility = Visibility.Collapsed;
                 metadata.Text = result.PixelWidth + " × " + result.PixelHeight + "   " + FormatSize(result.FileSize) + (result.IsPreview ? "   已缩小预览" : "");
-                if (Path.GetExtension(path).Equals(".gif", StringComparison.OrdinalIgnoreCase)) metadata.Text += "   首帧";
+                string extension = Path.GetExtension(path);
+                if (extension.Equals(".gif", StringComparison.OrdinalIgnoreCase) || extension.Equals(".webp", StringComparison.OrdinalIgnoreCase)) metadata.Text += "   首帧";
+                UpdateActionStates();
                 if (panelKind == "info") BuildPanel();
+                var neighbors = new List<string>();
+                if (index + 1 < files.Count) neighbors.Add(files[index + 1]);
+                if (index > 0) neighbors.Add(files[index - 1]);
+                imageCache.Preload(neighbors);
             }
             catch (Exception ex)
             {
                 if (!closed && version == requestId)
                 {
+                    loaded = null;
                     surface.ClearImage(); surface.Opacity = 1;
+                    ReleaseImageLease(); UpdateActionStates();
                     metadata.Text = "打开失败";
                     ShowMessage("无法显示「" + Path.GetFileName(path) + "」\n" + ex.Message + "\n可用方向键继续浏览，或重新打开图片。");
                 }
             }
+            finally { if (nextLease != null) nextLease.Dispose(); }
         }
 
-        private void ApplyOrientation()
+        private void ApplyOrientation(bool preserveView = false)
         {
+            if (loaded == null && clipboardImage != null)
+            {
+                BitmapSource clipboardBitmap = clipboardImage.Bitmap;
+                if (userTurns != 0)
+                {
+                    clipboardBitmap = new TransformedBitmap(clipboardBitmap, new RotateTransform(userTurns * 90));
+                    clipboardBitmap.Freeze();
+                }
+                bool clipboardSwapped = userTurns % 2 != 0;
+                surface.SetImage(clipboardBitmap, clipboardSwapped ? clipboardImage.Height : clipboardImage.Width,
+                    clipboardSwapped ? clipboardImage.Width : clipboardImage.Height, preserveView);
+                return;
+            }
             if (loaded == null) return;
             BitmapSource bitmap = loaded.Bitmap;
             var transforms = new TransformGroup();
@@ -386,14 +513,94 @@ namespace FastImageViewer
                 bitmap = new TransformedBitmap(bitmap, transforms); bitmap.Freeze();
             }
             bool swapped = ((loaded.ExifQuarterTurns + userTurns) % 2) != 0;
-            surface.SetImage(bitmap, swapped ? loaded.PixelHeight : loaded.PixelWidth, swapped ? loaded.PixelWidth : loaded.PixelHeight);
+            surface.SetImage(bitmap, swapped ? loaded.PixelHeight : loaded.PixelWidth, swapped ? loaded.PixelWidth : loaded.PixelHeight, preserveView);
         }
 
         private void Rotate(int turns)
         {
-            if (loaded == null) return;
+            if (!HasReadyImage) return;
             userTurns = (userTurns + turns + 4) % 4;
             ApplyOrientation();
+        }
+
+        private bool HasReadyImage { get { return loaded != null || clipboardImage != null; } }
+
+        private void CancelLoad()
+        {
+            if (loadCancellation == null) return;
+            loadCancellation.Cancel(); loadCancellation.Dispose(); loadCancellation = null;
+        }
+
+        private void ReleaseImageLease()
+        {
+            if (imageLease == null) return;
+            imageLease.Dispose(); imageLease = null;
+        }
+
+        private void UpdateActionStates()
+        {
+            foreach (var item in copyImageItems) item.IsEnabled = HasReadyImage;
+            foreach (var item in revealFileItems) item.IsEnabled = loaded != null && !String.IsNullOrWhiteSpace(loaded.Path);
+        }
+
+        private void SetKeepView(bool enabled)
+        {
+            keepView = enabled;
+            foreach (var item in keepViewItems) item.IsChecked = enabled;
+            SetHint(zoomInput, enabled ? "输入缩放百分比；切图时保持缩放与位置（K 关闭）" : "输入缩放百分比，按 Enter 应用");
+        }
+
+        public async void CopyImage()
+        {
+            if (!HasReadyImage || surface.Bitmap == null) return;
+            int operation = ++clipboardOperationId;
+            BitmapSource image = surface.Bitmap;
+            try
+            {
+                byte[] png = await Task.Run(delegate { return ClipboardImages.EncodePng(image); });
+                if (!closed && operation == clipboardOperationId) clipboard.Write(ClipboardImages.CopyData(image, png));
+            }
+            catch (Exception error) { if (!closed && operation == clipboardOperationId) ShowMessage("无法复制图片：" + error.Message); }
+        }
+
+        public void PasteImage()
+        {
+            try { OpenClipboardData(clipboard.Read()); }
+            catch (Exception error) { ShowMessage("无法读取剪贴板：" + error.Message); }
+        }
+
+        public bool OpenClipboardData(IDataObject data)
+        {
+            if (data == null) { ShowMessage("剪贴板中没有可查看的图片。"); return false; }
+            var paths = data.GetData(DataFormats.FileDrop, true) as string[];
+            if (paths != null && paths.Length > 0) { clipboardOperationId++; OpenPaths(paths); return true; }
+            var text = data.GetData(DataFormats.UnicodeText, true) as string;
+            if (!String.IsNullOrWhiteSpace(text))
+            {
+                string path = text.Trim().Trim('"');
+                if (File.Exists(path) || Directory.Exists(path)) { clipboardOperationId++; OpenPaths(new[] { path }); return true; }
+            }
+            ClipboardImage image = ClipboardImages.Read(data);
+            if (image == null) { ShowMessage("剪贴板中没有可查看的图片。"); return false; }
+            requestId++; clipboardOperationId++; CancelLoad(); imageCache.Preload(new string[0]);
+            files = new List<string>(); index = -1; loaded = null; userTurns = 0;
+            clipboardImage = image;
+            try { ApplyOrientation(); ReleaseImageLease(); }
+            catch { ResetDisplay(); throw; }
+            surface.Opacity = 1; welcome.Visibility = Visibility.Collapsed; message.Visibility = Visibility.Collapsed;
+            filename.Text = "剪贴板图片"; filename.ToolTip = null; folder.Text = "";
+            Title = "剪贴板图片 - Fast Image Viewer";
+            metadata.Text = image.Width + " × " + image.Height + "   剪贴板" + (image.IsPreview ? "   已缩小预览" : "");
+            UpdateNavigation(); UpdateViewStatus();
+            if (panelKind == "info") BuildPanel();
+            surface.Focus(); return true;
+        }
+
+        public void RevealFile()
+        {
+            if (loaded == null || String.IsNullOrWhiteSpace(loaded.Path)) return;
+            try { revealFile(loaded.Path); }
+            catch (Exception error) { ShowMessage("无法定位图片：" + error.Message); }
         }
 
         private void UpdateNavigation()
@@ -405,22 +612,26 @@ namespace FastImageViewer
 
         private void ResetDisplay()
         {
-            loaded = null;
+            loaded = null; clipboardImage = null;
             surface.ClearImage(); surface.Opacity = 1;
+            ReleaseImageLease(); UpdateActionStates();
             filename.Text = ""; filename.ToolTip = null;
             folder.Text = "";
             metadata.Text = "";
-            Title = "拾图";
+            Title = "Fast Image Viewer";
             if (panelKind == "info") BuildPanel();
         }
 
         private void UpdateViewStatus()
         {
+            UpdateActionStates();
             UpdateDisplayModeStatus();
             UpdateZoomText(false);
             zoomInput.IsEnabled = fit.IsEnabled = actual.IsEnabled = surface.Bitmap != null;
-            fit.Background = surface.Bitmap != null && surface.View.IsFit ? SystemColors.ControlLightBrush : Brushes.Transparent;
-            actual.Background = surface.Bitmap != null && !surface.View.IsFit && Math.Abs(surface.View.Scale * surface.DpiScale - 1) < 0.001 ? SystemColors.ControlLightBrush : Brushes.Transparent;
+            if (surface.Bitmap != null && surface.View.IsFit) fit.SetResourceReference(Control.BackgroundProperty, "Theme.Selected");
+            else fit.Background = Brushes.Transparent;
+            if (surface.Bitmap != null && !surface.View.IsFit && Math.Abs(surface.View.Scale * surface.DpiScale - 1) < 0.001) actual.SetResourceReference(Control.BackgroundProperty, "Theme.Selected");
+            else actual.Background = Brushes.Transparent;
         }
 
         private void SetDisplayMode(bool pixel)
@@ -434,9 +645,9 @@ namespace FastImageViewer
             if (!force && displayedPixelMode == surface.PixelMode) return;
             displayedPixelMode = surface.PixelMode;
             displayMode.Content = surface.PixelMode ? "像素模式" : "平滑模式";
-            displayMode.ToolTip = surface.PixelMode
+            SetHint(displayMode, surface.PixelMode
                 ? "当前：像素模式。放大时保留像素边界。单击或按 P 切换为平滑模式。"
-                : "当前：平滑模式。缩放时平滑图像边缘，适合照片。单击或按 P 切换为像素模式。";
+                : "当前：平滑模式。缩放时平滑图像边缘，适合照片。单击或按 P 切换为像素模式。");
             AutomationProperties.SetName(displayMode, "当前显示模式：" + displayMode.Content);
             foreach (var item in smoothModeItems) item.IsChecked = !surface.PixelMode;
             foreach (var item in pixelModeItems) item.IsChecked = surface.PixelMode;
@@ -489,7 +700,7 @@ namespace FastImageViewer
             var heading = new DockPanel { Margin = new Thickness(0, 0, 0, 12) };
             var close = IconButton("close", "关闭面板  Esc", delegate { panel.Visibility = Visibility.Collapsed; panelKind = null; });
             DockPanel.SetDock(close, Dock.Right); heading.Children.Add(close);
-            var title = Text(panelKind == "help" ? "快捷键" : "图片信息", 14, "#262626"); title.VerticalAlignment = VerticalAlignment.Center;
+            var title = Text(panelKind == "help" ? "快捷键" : "图片信息", 14); title.VerticalAlignment = VerticalAlignment.Center;
             heading.Children.Add(title); panelBody.Children.Add(heading);
             if (panelKind == "help")
             {
@@ -509,11 +720,21 @@ namespace FastImageViewer
                 HelpRow("T", "隐藏 / 显示工具栏");
                 HelpRow("P", "平滑 / 像素模式，底栏显示当前模式");
                 HelpRow("B", "透明棋盘");
+                HelpRow("D", "浅色 / 深色主题");
                 HelpRow("Ctrl+O", "打开图片");
                 HelpRow("Ctrl+Shift+O", "打开文件夹");
+                HelpRow("Ctrl+C / Ctrl+V", "复制图片 / 粘贴图片或文件路径");
+                HelpRow("Ctrl+Enter", "在资源管理器中定位原文件");
+                HelpRow("K", "保持缩放与位置，菜单勾选当前状态");
                 HelpRow("I / F1", "图片信息 / 操作指南");
             }
-            else if (loaded == null) panelBody.Children.Add(Text("请先打开图片。", 12, "#666666"));
+            else if (clipboardImage != null)
+            {
+                InfoRow("来源", "剪贴板图片（内存查看）");
+                InfoRow("尺寸", clipboardImage.Width + " × " + clipboardImage.Height + " 像素");
+                if (clipboardImage.IsPreview) InfoRow("大图预览", "放大后细节以预览图为准。");
+            }
+            else if (loaded == null) panelBody.Children.Add(Text("请先打开图片。", 12, true));
             else
             {
                 InfoRow("文件名", Path.GetFileName(loaded.Path));
@@ -522,7 +743,7 @@ namespace FastImageViewer
                 InfoRow("路径", loaded.Path);
                 if (loaded.IsPreview) InfoRow("大图预览", "解码尺寸限制为 3200 万像素；放大后细节以预览图为准。");
                 string extension = Path.GetExtension(loaded.Path).ToLowerInvariant();
-                if (extension == ".gif" || extension == ".tif" || extension == ".tiff" || extension == ".ico") InfoRow("显示帧", "当前版本显示第一帧。");
+                if (extension == ".gif" || extension == ".webp" || extension == ".tif" || extension == ".tiff" || extension == ".ico") InfoRow("显示帧", "当前版本显示第一帧。");
                 string copyPath = loaded.Path;
                 var copy = Button("复制文件路径", "复制文件路径", delegate
                 {
@@ -538,15 +759,15 @@ namespace FastImageViewer
             var row = new Grid { Margin = new Thickness(0, 0, 0, 12) };
             row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(113) });
             row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-            var keyText = Text(key, 12, "#262626"); keyText.TextWrapping = TextWrapping.Wrap; keyText.Margin = new Thickness(0, 0, 8, 0);
-            var descriptionText = Text(description, 12, "#666666"); descriptionText.TextWrapping = TextWrapping.Wrap;
+            var keyText = Text(key, 12); keyText.TextWrapping = TextWrapping.Wrap; keyText.Margin = new Thickness(0, 0, 8, 0);
+            var descriptionText = Text(description, 12, true); descriptionText.TextWrapping = TextWrapping.Wrap;
             row.Children.Add(keyText); Grid.SetColumn(descriptionText, 1); row.Children.Add(descriptionText); panelBody.Children.Add(row);
         }
         private void InfoRow(string key, string value)
         {
             var row = new StackPanel { Margin = new Thickness(0, 0, 0, 16) };
-            row.Children.Add(Text(key, 11, "#666666"));
-            var text = Text(value, 12, "#262626"); text.TextWrapping = TextWrapping.Wrap; text.Margin = new Thickness(0, 4, 0, 0); row.Children.Add(text); panelBody.Children.Add(row);
+            row.Children.Add(Text(key, 11, true));
+            var text = Text(value, 12); text.TextWrapping = TextWrapping.Wrap; text.Margin = new Thickness(0, 4, 0, 0); row.Children.Add(text); panelBody.Children.Add(row);
         }
 
         public void ToggleFullscreen()
@@ -587,6 +808,9 @@ namespace FastImageViewer
             }
             if (e.OriginalSource is MenuItem || e.Source is MenuItem) return;
             if (ctrl && key == Key.O) { if (shift) OpenFolder(); else OpenFile(); }
+            else if (ctrl && key == Key.C) CopyImage();
+            else if (ctrl && key == Key.V) PasteImage();
+            else if (ctrl && key == Key.Enter) RevealFile();
             else if (key == Key.Escape)
             {
                 if (panel.Visibility == Visibility.Visible) { panel.Visibility = Visibility.Collapsed; panelKind = null; }
@@ -610,7 +834,9 @@ namespace FastImageViewer
             else if (key == Key.I) TogglePanel("info");
             else if (key == Key.P) SetDisplayMode(!surface.PixelMode);
             else if (key == Key.B) surface.ToggleCheckerboard();
+            else if (key == Key.D) SetTheme(!theme.IsDark);
             else if (key == Key.T) ToggleChrome();
+            else if (key == Key.K) SetKeepView(!keepView);
             else return;
             e.Handled = true;
         }

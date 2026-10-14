@@ -22,6 +22,7 @@ internal static class CoreTests
         Run("custom resize center and pan", TestPanResize);
         Run("zoom bounds preserve anchor", TestZoomBounds);
         Run("high DPI fit and gradual huge-image zoom", TestDeviceScale);
+        Run("preserved image view uses relative center and respects fit", TestPreservedView);
         Run("natural sorting and duplicate paths", TestSorting);
         Run("supported file extensions", TestExtensions);
         Run("image codecs, pixels, freeze and released files", TestCodecs);
@@ -74,6 +75,22 @@ internal static class CoreTests
         view.ActualSize();
         Near(view.Scale, 1, "actual size");
         SamePoint(view.ImagePointAt(400, 300), new Point(800, 600), "actual size centers image");
+    }
+
+    private static void TestPreservedView()
+    {
+        var view = LargeViewport();
+        view.ActualSize(); view.ZoomAt(1.5, 170, 230); view.Pan(40, -18);
+        Point center = view.ImagePointAt(400, 300);
+        view.SetImage(3200, 2400, true);
+        Near(view.Scale, 1.5, "manual zoom survives image change");
+        SamePoint(view.ImagePointAt(400, 300), new Point(center.X * 2, center.Y * 2), "relative center survives new dimensions");
+        view.SetImage(1600, 1200);
+        Check(view.IsFit, "default new image returns to fit"); Near(view.Scale, .5, "default fit ratio");
+        view.SetImage(100, 60, true);
+        Check(view.IsFit, "preserve option keeps fit behavior when already fitted"); Near(view.Scale, 1, "small image native size");
+        view.ActualSize(); view.SetImage(0, 0, true);
+        Check(view.IsFit, "invalid image resets to fit");
     }
 
     private static void TestFit()

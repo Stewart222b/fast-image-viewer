@@ -1,4 +1,4 @@
-拾图 / Fast Image Viewer 0.2.1
+Fast Image Viewer 0.3.0
 Linux / macOS build
 
 这个目录是自包含发布结果。Linux 上直接运行 FastImageViewer，macOS 上同样运行 FastImageViewer。

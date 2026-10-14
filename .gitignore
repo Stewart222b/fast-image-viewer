@@ -2,5 +2,6 @@
 /artifacts/
 bin/
 obj/
+AvaloniaUI/
 *.user
 *.suo
