@@ -161,8 +161,9 @@ namespace FastImageViewer.Desktop
             var mode = pixelMode
                 ? BitmapInterpolationMode.None
                 : (wheel.IsActive ? BitmapInterpolationMode.LowQuality : BitmapInterpolationMode.HighQuality);
-            RenderOptions.SetBitmapInterpolationMode(this, mode);
-            context.DrawImage(bitmap, rect);
+            // Setting the attached property during Render invalidates the visual and aborts the pass.
+            using (context.PushRenderOptions(new RenderOptions { BitmapInterpolationMode = mode }))
+                context.DrawImage(bitmap, rect);
         }
 
         protected override void OnSizeChanged(SizeChangedEventArgs e)
