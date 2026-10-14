@@ -68,14 +68,22 @@ namespace FastImageViewer.Imaging
                     {
                         int pixel = raster[source + x];
                         byte* sample = row + x * 4;
-                        sample[0] = (byte)Tiff.GetB(pixel);
-                        sample[1] = (byte)Tiff.GetG(pixel);
-                        sample[2] = (byte)Tiff.GetR(pixel);
-                        sample[3] = (byte)Tiff.GetA(pixel);
+                        int alpha = Tiff.GetA(pixel);
+                        // LibTiff returns associated alpha. The rest of the imaging pipeline
+                        // uses straight alpha, so undo the multiplication exactly once.
+                        sample[0] = Unpremultiply(Tiff.GetB(pixel), alpha);
+                        sample[1] = Unpremultiply(Tiff.GetG(pixel), alpha);
+                        sample[2] = Unpremultiply(Tiff.GetR(pixel), alpha);
+                        sample[3] = (byte)alpha;
                     }
                 }
             }
             return bitmap;
+        }
+
+        static byte Unpremultiply(int channel, int alpha)
+        {
+            return alpha == 0 ? (byte)0 : (byte)Math.Min(255, (channel * 255 + alpha / 2) / alpha);
         }
 
         sealed class QuietHandler : TiffErrorHandler

@@ -6,6 +6,10 @@ namespace FastImageViewer
 {
     public static class ImageFiles
     {
+        // Unix volumes can contain names that differ only by case, including macOS.
+        public static readonly StringComparer PathComparer = Path.DirectorySeparatorChar == '\\'
+            ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
+
         public const string DialogFilter = "图片文件|*.jpg;*.jpeg;*.png;*.bmp;*.gif;*.tif;*.tiff;*.ico;*.wdp;*.jxr|所有文件|*.*";
         private static readonly HashSet<string> Extensions = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
@@ -27,7 +31,7 @@ namespace FastImageViewer
         {
             if (paths == null) throw new ArgumentNullException("paths");
             var results = new List<string>();
-            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var seen = new HashSet<string>(PathComparer);
             foreach (string path in paths)
             {
                 if (String.IsNullOrWhiteSpace(path)) continue;

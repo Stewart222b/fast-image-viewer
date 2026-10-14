@@ -10,6 +10,8 @@
   <ItemGroup>
     <ProjectReference Include="..\..\core\FastImageViewer.Core.csproj" />
     <ProjectReference Include="..\..\imaging\FastImageViewer.Imaging.csproj" />
+    <ProjectReference Include="..\..\cross\FastImageViewer.Desktop.csproj" />
+    <PackageReference Include="Avalonia.Headless" Version="12.1.4" />
     <PackageReference Include="SkiaSharp.NativeAssets.Linux" Version="3.119.4" />
     <PackageReference Include="SkiaSharp.NativeAssets.macOS" Version="3.119.4" />
     <PackageReference Include="SkiaSharp.NativeAssets.Win32" Version="3.119.4" />

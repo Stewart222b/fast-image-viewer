@@ -435,7 +435,7 @@ namespace FastImageViewer.Desktop
                     return;
                 }
                 string selected = paths.Length == 1 && File.Exists(paths[0]) ? Path.GetFullPath(paths[0]) : null;
-                int selectedIndex = selected == null ? 0 : files.FindIndex(p => String.Equals(p, selected, StringComparison.OrdinalIgnoreCase));
+                int selectedIndex = selected == null ? 0 : files.FindIndex(p => ImageFiles.PathComparer.Equals(p, selected));
                 ShowIndex(Math.Max(0, selectedIndex));
             }
             catch (Exception ex)

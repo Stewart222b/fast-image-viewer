@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using BitMiracle.LibTiff.Classic;
 using FastImageViewer;
 using FastImageViewer.Core;
 using FastImageViewer.Imaging;
@@ -15,6 +16,7 @@ namespace FastImageViewer.CrossTests
         private static string samples;
         private static readonly ImagePoint Anchor = new ImagePoint(173, 219);
 
+        [STAThread]
         private static int Main(string[] args)
         {
             samples = Path.Combine(args[0], "samples");
@@ -25,6 +27,7 @@ namespace FastImageViewer.CrossTests
             Run("zoom bounds preserve anchor", TestZoomBounds);
             Run("high DPI fit and gradual huge-image zoom", TestDeviceScale);
             Run("natural sorting and duplicate paths", TestSorting);
+            Run("platform path identity and case-distinct files", TestPathIdentity);
             Run("supported file extensions", TestExtensions);
             Run("directory listing", TestDirectory);
             Run("decode budget", TestBudget);
@@ -56,9 +59,13 @@ namespace FastImageViewer.CrossTests
             Run("image codecs and released files", TestCodecs);
             Run("exif jpeg orientation", TestExifJpeg);
             Run("tiff orientation stays in the tag", TestTiffOrientation);
+            Run("tiff alpha survives decode, rotation and compositing", TestTiffAlpha);
             Run("large image bounded preview", TestLargeImage);
             Run("corrupt and missing images", TestFailures);
             Run("orientation pixel transform", TestPixelTransform);
+            Run("checkerboard work stays within visible bounds", DesktopRegressionTests.TestCheckerboard);
+            Run("monitor scaling refreshes fit and physical zoom", DesktopRegressionTests.TestScaling);
+            Run("detached canvas ignores former monitor scaling", DesktopRegressionTests.TestDetach);
             Console.WriteLine("RESULT: " + passed + " passed, " + failed + " failed");
             return failed == 0 ? 0 : 1;
         }
@@ -191,7 +198,7 @@ namespace FastImageViewer.CrossTests
             string[] names = { prefix + "10.png", prefix + "999999999999999999999999.png", prefix + "2.png", prefix + "1000000000000000000000000.png" };
             var paths = new List<string>();
             foreach (string name in names) paths.Add(Path.Combine(samples, name));
-            paths.Add(paths[0].ToUpperInvariant());
+            paths.Add(paths[0]);
             paths.Add(Path.Combine(samples, "ignored.txt"));
             List<string> sorted = ImageFiles.FromPaths(paths);
             Check(sorted.Count == 4, "filter unsupported and duplicate paths");
@@ -207,6 +214,67 @@ namespace FastImageViewer.CrossTests
                 Check(ImageFiles.IsSupported("image" + extension.ToUpperInvariant()), "supported extension " + extension);
             foreach (string path in new[] { "image.txt", "image.svg", "image", "", null })
                 Check(!ImageFiles.IsSupported(path), "unsupported path " + path);
+        }
+
+        private static void TestPathIdentity()
+        {
+            string lower = Path.Combine(samples, "case-files", "a.png");
+            string upper = Path.Combine(samples, "case-files", "A.png");
+            var listed = ImageFiles.FromPaths(new[] { lower, upper, lower });
+            bool windows = Path.DirectorySeparatorChar == '\\';
+            Check(listed.Count == (windows ? 1 : 2), "case-distinct paths must survive on Unix");
+            Check(ImageFiles.PathComparer.Equals(lower, upper) == windows, "selection uses the same path identity");
+            if (!windows)
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(lower));
+                File.WriteAllBytes(lower, new byte[] { 1 });
+                File.WriteAllBytes(upper, new byte[] { 2 });
+                // Only assert the two-file directory case when the volume itself preserves it.
+                if (File.ReadAllBytes(lower)[0] == 1)
+                    Check(ImageFiles.InDirectory(lower).Count == 2, "case-sensitive directory must list both files");
+            }
+        }
+
+        private static void TestTiffAlpha()
+        {
+            foreach (ExtraSample alphaType in new[] { ExtraSample.ASSOCALPHA, ExtraSample.UNASSALPHA })
+            {
+                string path = Path.Combine(samples, "alpha-" + alphaType + ".tiff");
+                using (Tiff file = Tiff.Open(path, "w"))
+                {
+                    file.SetField(TiffTag.IMAGEWIDTH, 3);
+                    file.SetField(TiffTag.IMAGELENGTH, 1);
+                    file.SetField(TiffTag.BITSPERSAMPLE, 8);
+                    file.SetField(TiffTag.SAMPLESPERPIXEL, 4);
+                    file.SetField(TiffTag.PHOTOMETRIC, Photometric.RGB);
+                    file.SetField(TiffTag.PLANARCONFIG, PlanarConfig.CONTIG);
+                    file.SetField(TiffTag.ROWSPERSTRIP, 1);
+                    file.SetField(TiffTag.EXTRASAMPLES, 1, new short[] { (short)alphaType });
+                    byte[] rgba = alphaType == ExtraSample.ASSOCALPHA
+                        ? new byte[] { 100, 50, 25, 128, 0, 0, 0, 0, 200, 100, 50, 255 }
+                        : new byte[] { 200, 100, 50, 128, 200, 100, 50, 0, 200, 100, 50, 255 };
+                    Check(file.WriteScanline(rgba, 0), "write alpha TIFF");
+                }
+                using (Picture picture = PictureLoader.Load(path))
+                using (SKBitmap rotated = ImageOrientation.Apply(picture.Pixels, 0, false, 1))
+                using (var target = new SKBitmap(new SKImageInfo(1, 3)))
+                using (var canvas = new SKCanvas(target))
+                {
+                    Check(picture.Pixels.AlphaType == SKAlphaType.Unpremul, "straight alpha pipeline");
+                    SKColor translucent = rotated.GetPixel(0, 0);
+                    Check(Math.Abs(translucent.Red - 200) <= 2 && Math.Abs(translucent.Green - 100) <= 2 &&
+                        Math.Abs(translucent.Blue - 50) <= 2 && translucent.Alpha == 128,
+                        "translucent colors must not be multiplied twice: " + translucent);
+                    Check(rotated.GetPixel(0, 1).Alpha == 0, "fully transparent alpha");
+                    Check(rotated.GetPixel(0, 2) == new SKColor(200, 100, 50), "opaque color");
+                    canvas.Clear(SKColors.White);
+                    canvas.DrawBitmap(rotated, 0, 0);
+                    SKColor blended = target.GetPixel(0, 0);
+                    Check(Math.Abs(blended.Red - 227) <= 2 && Math.Abs(blended.Green - 177) <= 2 &&
+                        Math.Abs(blended.Blue - 152) <= 2, "white-background compositing: " + blended);
+                    Check(target.GetPixel(0, 1) == SKColors.White, "transparent pixel leaves background intact");
+                }
+            }
         }
 
         private static void TestDirectory()

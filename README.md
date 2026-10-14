@@ -113,6 +113,8 @@ bash ./run-unix.sh
 
 `tests/cross-test.sh` 在 .NET 8 上跑视口、滚轮、排序、解码预算、EXIF 映射，以及 PNG、JPEG、BMP、GIF、TIFF 的解码。WPF 窗口和 `ImageSurface` 仍由 Windows 上的 `tests/integration.ps1`、`tests/wheel.ps1` 覆盖。
 
+跨平台回归测试还验证透明 TIFF 的颜色合成、棋盘格只绘制可见区域，以及 DPI 改变时的适应窗口和物理缩放比例。Avalonia 界面测试使用 Headless 平台，不会打开桌面窗口。`bash tests/unix-runner-test.sh` 验证 Linux/macOS 的 x64、ARM64 启动选择和带空格的路径参数；`run-unix.sh` 会按当前系统和架构选择发布目录。
+
 和 Windows 版的差异：
 
 - 界面控件是 Avalonia，布局和快捷键对齐现有查看器，不是同一套 WPF 控件。

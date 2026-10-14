@@ -25,6 +25,7 @@ namespace FastImageViewer.Desktop
         private bool checkerboard;
         private bool dragging;
         private Point lastPoint;
+        private TopLevel topLevel;
 
         public Viewport View { get { return view; } }
         public bool HasImage { get { return bitmap != null; } }
@@ -169,9 +170,38 @@ namespace FastImageViewer.Desktop
         protected override void OnSizeChanged(SizeChangedEventArgs e)
         {
             base.OnSizeChanged(e);
+            UpdateViewport(e.NewSize);
+        }
+
+        protected override void OnAttachedToVisualTree(VisualTreeAttachmentEventArgs e)
+        {
+            base.OnAttachedToVisualTree(e);
+            topLevel = TopLevel.GetTopLevel(this);
+            if (topLevel != null) topLevel.ScalingChanged += OnScalingChanged;
+            UpdateViewport(Bounds.Size);
+        }
+
+        protected override void OnDetachedFromVisualTree(VisualTreeAttachmentEventArgs e)
+        {
+            if (topLevel != null) topLevel.ScalingChanged -= OnScalingChanged;
+            topLevel = null;
             CancelWheelZoom();
+            base.OnDetachedFromVisualTree(e);
+        }
+
+        private void OnScalingChanged(object sender, EventArgs e)
+        {
+            UpdateViewport(Bounds.Size);
+        }
+
+        private void UpdateViewport(Size size)
+        {
+            CancelWheelZoom();
+            double previousDpi = view.DeviceScale;
             view.DeviceScale = DpiScale;
-            view.Resize(e.NewSize.Width, e.NewSize.Height);
+            if (!view.IsFit && previousDpi != view.DeviceScale)
+                view.ZoomAt(previousDpi / view.DeviceScale, view.ViewportWidth / 2, view.ViewportHeight / 2);
+            view.Resize(size.Width, size.Height);
             Changed();
         }
 
@@ -273,13 +303,15 @@ namespace FastImageViewer.Desktop
 
         private void DrawChecker(DrawingContext context, Rect rect)
         {
-            using (context.PushClip(rect))
+            Rect visible = rect.Intersect(new Rect(Bounds.Size));
+            if (visible.Width <= 0 || visible.Height <= 0) return;
+            using (context.PushClip(visible))
             {
                 const double size = 8;
-                int x0 = (int)Math.Floor(rect.X / size);
-                int y0 = (int)Math.Floor(rect.Y / size);
-                int x1 = (int)Math.Ceiling(rect.Right / size);
-                int y1 = (int)Math.Ceiling(rect.Bottom / size);
+                int x0 = (int)Math.Floor(visible.X / size);
+                int y0 = (int)Math.Floor(visible.Y / size);
+                int x1 = (int)Math.Ceiling(visible.Right / size);
+                int y1 = (int)Math.Ceiling(visible.Bottom / size);
                 for (int y = y0; y < y1; y++)
                 {
                     for (int x = x0; x < x1; x++)
