@@ -1,0 +1,11 @@
+拾图 / Fast Image Viewer 0.2.1
+Linux / macOS build
+
+这个目录是自包含发布结果。Linux 上直接运行 FastImageViewer，macOS 上同样运行 FastImageViewer。
+macOS 包没有签名。第一次打开时，系统可能会拦截未签名应用。
+
+Linux 需要本机已有 X11、fontconfig 和 freetype。中文界面建议安装 Noto Sans CJK 或文泉驿字体。
+常见包名：libfontconfig1、libfreetype6、libx11-6、libice6、libsm6、fonts-noto-cjk。
+
+把图片路径或文件夹路径传给程序即可打开。也可以在窗口里打开，或把文件拖进窗口。
+WDP / JXR 只在 Windows 版通过系统解码器打开。GIF 和 TIFF 只显示第一帧。TIFF 使用 LibTiff.NET，不依赖 Skia 的 TIFF 解码器。
