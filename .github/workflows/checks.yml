@@ -41,4 +41,3 @@ jobs:
       - name: Windows portable build
         if: runner.os == 'Windows'
         run: powershell -NoProfile -ExecutionPolicy Bypass -File build.ps1
-
