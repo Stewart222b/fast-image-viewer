@@ -10,6 +10,7 @@ try {
     if (-not $output.StartsWith($workspacePrefix, [StringComparison]::OrdinalIgnoreCase)) { throw 'Build output must be inside the project directory.' }
     New-Item -ItemType Directory -Path $output -Force | Out-Null
     $sources = @(Get-ChildItem -LiteralPath (Join-Path $root 'src') -Filter '*.cs' -File | ForEach-Object { $_.FullName })
+    $sources += @(Get-ChildItem -LiteralPath (Join-Path $root 'core') -Filter '*.cs' -File | ForEach-Object { $_.FullName })
     if ($sources.Count -eq 0) { throw 'No C# source files were found in src.' }
     $arguments = @('/nologo', '/target:winexe', '/platform:x64', '/optimize+', '/langversion:5', ('/out:' + (Join-Path $output 'FastImageViewer.exe')), ('/win32manifest:' + (Join-Path $root 'app.manifest')), '/reference:System.dll', '/reference:System.Core.dll', '/reference:System.Xaml.dll', '/reference:System.Drawing.dll', '/reference:System.Windows.Forms.dll')
     foreach ($assembly in @('WindowsBase.dll', 'PresentationCore.dll', 'PresentationFramework.dll')) {

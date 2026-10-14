@@ -1,4 +1,6 @@
 /dist/
 /artifacts/
+bin/
+obj/
 *.user
 *.suo
