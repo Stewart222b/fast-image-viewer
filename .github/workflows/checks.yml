@@ -1,0 +1,43 @@
+name: Build and test
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 8.0.x
+      - name: Core, imaging and headless canvas regressions
+        run: dotnet run -c Release --project tests/FastImageViewer.Cross.Tests/FastImageViewer.Cross.Tests.csproj -- artifacts
+      - name: Unix runner architecture and argument handling
+        if: runner.os != 'Windows'
+        run: bash tests/unix-runner-test.sh
+      - name: Windows core tests
+        if: runner.os == 'Windows'
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tests/test.ps1
+      - name: Windows wheel tests
+        if: runner.os == 'Windows'
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tests/wheel.ps1
+      - name: Windows WPF integration tests
+        if: runner.os == 'Windows'
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tests/integration.ps1
+      - name: Windows portable build
+        if: runner.os == 'Windows'
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File build.ps1

@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <RootNamespace>FastImageViewer.Imaging</RootNamespace>
+    <AssemblyName>FastImageViewer.Imaging</AssemblyName>
+    <Version>0.2.1</Version>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Description>Skia image decode for the Linux and macOS Fast Image Viewer.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\core\FastImageViewer.Core.csproj" />
+    <PackageReference Include="BitMiracle.LibTiff.NET" Version="2.4.660" />
+    <PackageReference Include="SkiaSharp" Version="3.119.4" />
+    <PackageReference Include="SkiaSharp.NativeAssets.Linux" Version="3.119.4" />
+    <PackageReference Include="SkiaSharp.NativeAssets.macOS" Version="3.119.4" />
+    <PackageReference Include="SkiaSharp.NativeAssets.Win32" Version="3.119.4" />
+  </ItemGroup>
+</Project>

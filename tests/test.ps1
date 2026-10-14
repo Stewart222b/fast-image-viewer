@@ -11,7 +11,8 @@ try {
     foreach ($assembly in @('WindowsBase.dll', 'PresentationCore.dll', 'PresentationFramework.dll')) {
         $arguments += '/reference:' + (Join-Path $wpf $assembly)
     }
-    & $compiler @arguments (Join-Path $PSScriptRoot 'CoreTests.cs') (Join-Path $root 'src\ViewerCore.cs')
+    $core = @(Get-ChildItem -LiteralPath (Join-Path $root 'core') -Filter '*.cs' -File | ForEach-Object { $_.FullName })
+    & $compiler @arguments (Join-Path $PSScriptRoot 'CoreTests.cs') (Join-Path $root 'src\ViewerCore.cs') @core
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     Copy-Item -LiteralPath (Join-Path $root 'src\App.config') -Destination ($exe + '.config') -Force
     & $exe $output

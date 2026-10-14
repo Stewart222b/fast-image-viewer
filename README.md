@@ -1,6 +1,8 @@
 # Fast Image Viewer
 
-Fast Image Viewer 是一个面向 Windows 的轻量图片查看器，当前版本为 0.2.1。优先处理连续滚轮缩放、拖动、快捷键和界面操作。使用 C#、WPF 和系统图片解码器，无需浏览器运行环境。
+Fast Image Viewer 是一个轻量图片查看器，当前版本为 0.2.1。优先处理连续滚轮缩放、拖动、快捷键和界面操作。
+
+Windows 版使用 C#、WPF 和系统图片解码器，无需浏览器运行环境。Linux 和 macOS 版共用 `core/` 里的视口、滚轮和文件列表，界面是 Avalonia，图片解码使用 Skia。Windows 的构建产物仍然是单个 `FastImageViewer.exe`，不额外带 DLL。
 
 ## 运行
 
@@ -91,6 +93,35 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\wheel.ps1
 滚轮专项测试 **16 组通过、0 组失败**，覆盖 1 / 15 / 30 / 60 / 120 的增量、等量输入一致性、连续插值、反向响应、锚点、缩放边界、动画取消和减少动画设置。
 
 这些测试验证核心逻辑，不代表真实桌面上的缩放、拖动、焦点和多显示器操作已经全部验证。桌面交互仍需人工试用确认。
+
+## Linux 与 macOS
+
+Windows 脚本不变：`build.ps1` 会把 `core\*.cs` 和 `src\*.cs` 编进同一个 EXE。Linux 和 macOS 不编译 WPF 工程，而是发布 `cross/FastImageViewer.Desktop.csproj`。
+
+需要 .NET 8 SDK。Linux 运行时还需要 X11、fontconfig、freetype，中文界面建议安装 Noto Sans CJK。
+
+在项目目录执行：
+
+```bash
+bash ./tests/cross-test.sh
+bash ./build-unix.sh linux-x64
+bash ./build-unix.sh osx-x64 osx-arm64
+bash ./run-unix.sh
+```
+
+`build-unix.sh` 生成自包含目录 `artifacts/publish/<rid>/`，并打包为 `artifacts/FastImageViewer-0.2.1-<rid>.tar.gz`。支持的 rid 是 `linux-x64`、`linux-arm64`、`osx-x64`、`osx-arm64`。macOS 包未签名。
+
+`tests/cross-test.sh` 在 .NET 8 上跑视口、滚轮、排序、解码预算、EXIF 映射，以及 PNG、JPEG、BMP、GIF、TIFF 的解码。WPF 窗口和 `ImageSurface` 仍由 Windows 上的 `tests/integration.ps1`、`tests/wheel.ps1` 覆盖。
+
+跨平台回归测试还验证透明 TIFF 的颜色合成、棋盘格只绘制可见区域，以及 DPI 改变时的适应窗口和物理缩放比例。Avalonia 界面测试使用 Headless 平台，不会打开桌面窗口。`bash tests/unix-runner-test.sh` 验证 Linux/macOS 的 x64、ARM64 启动选择和带空格的路径参数；`run-unix.sh` 会按当前系统和架构选择发布目录。
+
+和 Windows 版的差异：
+
+- 界面控件是 Avalonia，布局和快捷键对齐现有查看器，不是同一套 WPF 控件。
+- 滚轮一格在 Avalonia 里大约是 `1.0`，程序乘回 `120` 后再走同一套缩放。
+- JPG、PNG、BMP、GIF、ICO 由 Skia 解码。当前 Skia 构建不含 TIFF 解码器，TIFF 由 LibTiff.NET 读取第一帧；方向标签仍交给和 Windows 相同的映射，不提前烘焙进像素。超过约 1.6 亿像素的 TIFF 会拒绝解码。WDP / JXR 仍会出现在文件列表里，但只有 Windows 系统解码器能打开。
+- GIF、TIFF、ICO 仍然只显示第一帧。
+- 系统关闭动画时，Windows 版会立刻跳到目标比例；Linux / macOS 版始终使用 80 ms 过渡。
 
 ## 设计说明
 
