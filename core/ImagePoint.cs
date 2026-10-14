@@ -5,7 +5,7 @@ namespace FastImageViewer.Core
         public double X { get; private set; }
         public double Y { get; private set; }
 
-        public ImagePoint(double x, double y)
+        public ImagePoint(double x, double y) : this()
         {
             X = x;
             Y = y;
